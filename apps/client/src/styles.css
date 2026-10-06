@@ -51,6 +51,11 @@ canvas { display: block; width: 100%; height: auto; border: 1px solid #334155; b
 .controls-hint { color: #94a3b8; font-size: 0.78rem; padding: 10px 0; text-align: center; }
 .sidebar { display: grid; gap: 12px; }
 .stats-panel { display: grid; gap: 12px; }
+.dice-panel { display: grid; gap: 10px; text-align: center; }
+.dice-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 10px; }
+.dice-heading h3 { margin: 0; }
+.dice-face { color: #f8fafc; font-size: 4.4rem; line-height: 1; text-shadow: 0 0 24px rgba(56, 189, 248, 0.45); }
+.dice-button { width: 100%; }
 .stat-row strong { color: #f8fafc; }
 .action-panel { display: grid; gap: 10px; }
 .roll-button { font-size: 1.1rem; padding: 15px; }

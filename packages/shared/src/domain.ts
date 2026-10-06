@@ -128,6 +128,7 @@ export interface SessionState {
   phase: Phase;
   activePlayer: PlayerId;
   turnNumber: number;
+  lastRoll: number | null;
   seed: string;
   players: Record<PlayerId, PlayerState>;
   floor: FloorBlueprint | null;

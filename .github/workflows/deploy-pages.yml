@@ -40,7 +40,7 @@ jobs:
         run: pnpm --filter @tower/client build
         env:
           VITE_BASE_PATH: /DiceTower-RollTo100/
-          VITE_WS_URL: ${{ vars.VITE_WS_URL }}
+          VITE_WS_URL: wss://dicetower-rollto100-server.onrender.com
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

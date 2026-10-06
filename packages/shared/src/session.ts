@@ -148,6 +148,7 @@ export class SessionEngine {
       phase: 'lobby',
       activePlayer: 'p1',
       turnNumber: 0,
+      lastRoll: null,
       seed,
       players: {
         p1: createPlayer('p1', '1P'),
@@ -188,6 +189,7 @@ export class SessionEngine {
     if (!this.isActive(playerId) || this.state.phase !== 'roll') return { ok: false, error: 'It is not your roll.' };
     const roll = (deriveSeed(this.state.seed, 'roll', this.state.turnNumber, playerId) % 6) + 1;
     const player = this.state.players[playerId];
+    this.state.lastRoll = roll;
     player.floor = Math.min(100, player.floor + roll);
     this.enterFloor(playerId, player.floor);
     this.touch();

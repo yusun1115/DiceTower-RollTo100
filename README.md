@@ -46,3 +46,10 @@ pnpm build
 ## 범위
 
 현재 첫 버전은 PC 브라우저를 대상으로 하며, 모바일 입력·공개 매칭·계정 저장은 포함하지 않습니다. 세션은 메모리에만 존재하므로 서버가 재시작되면 방과 진행 상태가 사라집니다.
+
+## 배포 주소
+
+- 게임: https://yusun1115.github.io/DiceTower-RollTo100/
+- 세션 서버: https://dicetower-rollto100-server.onrender.com/
+
+`main` 브랜치에 push하면 GitHub Actions가 Pages 정적 클라이언트를 빌드하고, Render에 연결된 서버 서비스가 WebSocket 서버를 재배포합니다. Pages 빌드는 `wss://dicetower-rollto100-server.onrender.com`을 사용합니다.

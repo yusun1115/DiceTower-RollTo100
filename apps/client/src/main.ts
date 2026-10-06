@@ -54,6 +54,11 @@ root.innerHTML = `
           <div class="stat-row"><span>내 무기</span><strong id="weapon-value">기본 공격</strong></div>
           <div class="stat-row"><span>턴</span><strong id="turn-value">-</strong></div>
         </div>
+        <div class="panel dice-panel">
+          <div class="dice-heading"><h3>다음 이동</h3><span id="dice-status" class="muted">준비 대기</span></div>
+          <div id="dice-face" class="dice-face" aria-label="최근 주사위 결과">⚀</div>
+          <button id="dice-button" class="primary dice-button" disabled>주사위 굴리기</button>
+        </div>
         <div id="action-panel" class="panel action-panel"></div>
         <div id="shop-panel" class="panel shop-panel hidden"></div>
         <div id="event-log" class="event-log" aria-live="polite"></div>
@@ -71,6 +76,9 @@ const context = canvas.getContext('2d')!;
 const actionPanel = document.querySelector<HTMLElement>('#action-panel')!;
 const shopPanel = document.querySelector<HTMLElement>('#shop-panel')!;
 const eventLog = document.querySelector<HTMLElement>('#event-log')!;
+const diceFace = document.querySelector<HTMLElement>('#dice-face')!;
+const diceStatus = document.querySelector<HTMLElement>('#dice-status')!;
+const diceButton = document.querySelector<HTMLButtonElement>('#dice-button')!;
 const keys = new Set<string>();
 const pointer = { x: canvas.width / 2, y: canvas.height / 2, down: false };
 let socket: WebSocket | null = null;
@@ -156,9 +164,30 @@ function renderState(): void {
     beep(sessionState.phase === 'victory' ? 740 : sessionState.phase === 'shop' ? 520 : 320);
   }
   renderActions();
+  renderDice();
   renderShop();
   renderWarnings();
   draw();
+}
+
+function renderDice(): void {
+  if (!sessionState || !playerId) return;
+  const faces = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
+  const isMine = sessionState.activePlayer === playerId;
+  const canRoll = sessionState.phase === 'roll' && isMine;
+  diceFace.textContent = sessionState.lastRoll ? faces[sessionState.lastRoll - 1] : '⚀';
+  diceStatus.textContent = sessionState.phase === 'lobby'
+    ? '준비 완료 후 시작'
+    : canRoll
+      ? '내 턴 · 굴릴 수 있음'
+      : sessionState.phase === 'roll'
+        ? '상대 턴'
+        : `최근 결과 ${sessionState.lastRoll ?? '-'}칸`;
+  diceButton.disabled = !canRoll;
+  diceButton.textContent = canRoll ? '주사위 굴리기' : '주사위 대기 중';
+  diceButton.onclick = () => {
+    if (canRoll) send({ type: 'roll' });
+  };
 }
 
 function renderWarnings(): void {
@@ -206,11 +235,10 @@ function renderActions(): void {
     return;
   }
   if (sessionState.phase === 'roll' && isMine) {
-    const roll = document.createElement('button');
-    roll.textContent = '주사위 굴리기';
-    roll.className = 'primary roll-button';
-    roll.onclick = () => send({ type: 'roll' });
-    actionPanel.append(roll);
+    const status = document.createElement('p');
+    status.className = 'muted';
+    status.textContent = '위 주사위 카드에서 이동할 층을 결정하세요.';
+    actionPanel.append(status);
     return;
   }
   if (sessionState.phase === 'combat') {
