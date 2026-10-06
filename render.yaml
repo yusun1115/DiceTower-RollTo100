@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: dicetower-rollto100-server
+    runtime: node
+    plan: free
+    region: singapore
+    buildCommand: corepack enable && pnpm install --frozen-lockfile && pnpm --filter @tower/server build
+    startCommand: pnpm --filter @tower/server start
+    healthCheckPath: /
+    envVars:
+      - key: NODE_VERSION
+        value: 22

@@ -1,7 +1,9 @@
 import './styles.css';
 import type { Difficulty, PlayerId, ServerMessage, SessionState } from '@tower/shared';
 
-const WS_URL = import.meta.env.VITE_WS_URL ?? `ws://${window.location.hostname}:8787`;
+const configuredWsUrl = import.meta.env.VITE_WS_URL;
+const defaultWsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+const WS_URL = configuredWsUrl || `${defaultWsProtocol}//${window.location.hostname}:8787`;
 const root = document.querySelector<HTMLDivElement>('#app');
 if (!root) throw new Error('Missing #app root');
 
