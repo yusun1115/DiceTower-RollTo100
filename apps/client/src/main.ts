@@ -87,6 +87,7 @@ const pendingMessages: object[] = [];
 let playerId: PlayerId | null = null;
 let sessionState: SessionState | null = null;
 let lastState: SessionState | null = null;
+let readySent = false;
 let lastCommandAt = 0;
 let lastWarningKey = '';
 let audioContext: AudioContext | null = null;
@@ -132,6 +133,7 @@ function send(message: object): void {
 function handleServerMessage(message: ServerMessage): void {
   if (message.type === 'welcome') {
     playerId = message.playerId;
+    readySent = false;
     document.querySelector('#room-code')!.textContent = message.roomCode;
     document.querySelector('#player-id')!.textContent = message.playerId;
     menuPanel.classList.add('hidden');
@@ -140,8 +142,11 @@ function handleServerMessage(message: ServerMessage): void {
     return;
   }
   if (message.type === 'error') {
+    readySent = false;
     showMessage(message.message);
     appendLog(`오류: ${message.message}`);
+    renderActions();
+    renderDice();
     return;
   }
   if (message.type === 'notice') {
@@ -150,6 +155,8 @@ function handleServerMessage(message: ServerMessage): void {
   }
   lastState = sessionState;
   sessionState = message.state;
+  if (sessionState.phase !== 'lobby') readySent = false;
+  if (playerId && (sessionState.readyPlayers ?? []).includes(playerId)) readySent = true;
   renderState();
 }
 
@@ -190,7 +197,7 @@ function renderDice(): void {
   const canRoll = sessionState.phase === 'roll' && isMine;
   const readyPlayers = sessionState.readyPlayers ?? [];
   const lastRoll = sessionState.lastRoll ?? null;
-  const readyByMe = readyPlayers.includes(playerId);
+  const readyByMe = readySent || readyPlayers.includes(playerId);
   diceFace.textContent = lastRoll ? faces[lastRoll - 1] : '⚀';
   diceStatus.textContent = sessionState.phase === 'lobby'
     ? readyByMe
@@ -245,7 +252,7 @@ function renderActions(): void {
   actionPanel.innerHTML = '';
   const isMine = sessionState.activePlayer === playerId;
   if (sessionState.phase === 'lobby') {
-    const readyByMe = (sessionState.readyPlayers ?? []).includes(playerId);
+    const readyByMe = readySent || (sessionState.readyPlayers ?? []).includes(playerId);
     const status = document.createElement('p');
     status.className = 'muted';
     status.textContent = sessionState.mode === 'cpu'
@@ -260,7 +267,12 @@ function renderActions(): void {
     ready.textContent = readyByMe ? '준비 완료됨' : '준비 완료';
     ready.className = 'primary';
     ready.disabled = readyByMe;
-    ready.onclick = () => send({ type: 'ready' });
+    ready.onclick = () => {
+      readySent = true;
+      renderActions();
+      renderDice();
+      send({ type: 'ready' });
+    };
     actionPanel.append(ready);
     return;
   }
