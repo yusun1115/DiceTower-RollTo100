@@ -83,6 +83,7 @@ const diceButton = document.querySelector<HTMLButtonElement>('#dice-button')!;
 const keys = new Set<string>();
 const pointer = { x: canvas.width / 2, y: canvas.height / 2, down: false };
 let socket: WebSocket | null = null;
+const pendingMessages: object[] = [];
 let playerId: PlayerId | null = null;
 let sessionState: SessionState | null = null;
 let lastState: SessionState | null = null;
@@ -96,6 +97,7 @@ function connect(): void {
   socket.addEventListener('open', () => {
     connectionStatus.textContent = '연결됨';
     connectionStatus.classList.add('connected');
+    for (const message of pendingMessages.splice(0)) socket?.send(JSON.stringify(message));
   });
   socket.addEventListener('close', () => {
     connectionStatus.textContent = '연결 끊김';
@@ -111,11 +113,20 @@ function connect(): void {
 }
 
 function send(message: object): void {
-  if (!socket || socket.readyState !== WebSocket.OPEN) {
+  if (!socket || socket.readyState === WebSocket.CLOSED) connect();
+  if (!socket) {
     showMessage('서버에 연결되지 않았습니다. pnpm dev를 실행했는지 확인하세요.');
     return;
   }
-  socket.send(JSON.stringify(message));
+  if (socket.readyState === WebSocket.OPEN) {
+    socket.send(JSON.stringify(message));
+    return;
+  }
+  if (socket.readyState === WebSocket.CONNECTING) {
+    pendingMessages.push(message);
+    return;
+  }
+  showMessage('서버 연결을 확인한 뒤 다시 시도하세요.');
 }
 
 function handleServerMessage(message: ServerMessage): void {
@@ -177,8 +188,10 @@ function renderDice(): void {
   const faces = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
   const isMine = sessionState.activePlayer === playerId;
   const canRoll = sessionState.phase === 'roll' && isMine;
-  const readyByMe = sessionState.readyPlayers.includes(playerId);
-  diceFace.textContent = sessionState.lastRoll ? faces[sessionState.lastRoll - 1] : '⚀';
+  const readyPlayers = sessionState.readyPlayers ?? [];
+  const lastRoll = sessionState.lastRoll ?? null;
+  const readyByMe = readyPlayers.includes(playerId);
+  diceFace.textContent = lastRoll ? faces[lastRoll - 1] : '⚀';
   diceStatus.textContent = sessionState.phase === 'lobby'
     ? readyByMe
       ? sessionState.mode === 'cpu' ? '게임 시작 중' : '내 준비 완료 · 상대 대기'
@@ -187,7 +200,7 @@ function renderDice(): void {
       ? '내 턴 · 굴릴 수 있음'
       : sessionState.phase === 'roll'
         ? '상대 턴'
-        : `최근 결과 ${sessionState.lastRoll ?? '-'}칸`;
+        : `최근 결과 ${lastRoll ?? '-'}칸`;
   diceButton.disabled = !canRoll;
   diceButton.textContent = canRoll ? '주사위 굴리기' : '주사위 대기 중';
   diceButton.onclick = () => {
@@ -232,7 +245,7 @@ function renderActions(): void {
   actionPanel.innerHTML = '';
   const isMine = sessionState.activePlayer === playerId;
   if (sessionState.phase === 'lobby') {
-    const readyByMe = sessionState.readyPlayers.includes(playerId);
+    const readyByMe = (sessionState.readyPlayers ?? []).includes(playerId);
     const status = document.createElement('p');
     status.className = 'muted';
     status.textContent = sessionState.mode === 'cpu'
