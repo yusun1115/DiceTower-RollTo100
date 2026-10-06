@@ -85,12 +85,14 @@ describe('authoritative session state', () => {
     expect(pvp.roll('p1').ok).toBe(false);
     expect(pvp.markReady('p1').ok).toBe(true);
     expect(pvp.state.phase).toBe('lobby');
+    expect(pvp.getSnapshot().readyPlayers).toEqual(['p1']);
     expect(pvp.markReady('p2').ok).toBe(true);
     expect(pvp.state.phase).toBe('roll');
 
     const cpu = new SessionEngine({ sessionId: 'cpu', roomCode: 'CPU1', mode: 'cpu', difficulty: 'hard', seed: 'cpu-seed' });
     expect(cpu.state.players.p2.name).toBe('CPU');
     expect(cpu.state.difficulty).toBe('hard');
+    expect(cpu.getSnapshot().readyPlayers).toContain('p2');
     expect(cpu.markReady('p1').ok).toBe(true);
     expect(cpu.state.phase).toBe('roll');
   });

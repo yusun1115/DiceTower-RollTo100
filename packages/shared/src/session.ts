@@ -149,6 +149,7 @@ export class SessionEngine {
       activePlayer: 'p1',
       turnNumber: 0,
       lastRoll: null,
+      readyPlayers: [],
       seed,
       players: {
         p1: createPlayer('p1', '1P'),
@@ -160,12 +161,14 @@ export class SessionEngine {
       winner: null
     };
     if (options.mode === 'cpu') this.ready.add('p2');
+    this.syncReadyPlayers();
   }
 
   markReady(playerId: PlayerId): CommandResult {
     if (this.state.phase !== 'lobby') return { ok: false, error: 'Match is already started.' };
     const wasReady = this.ready.has(playerId);
     this.ready.add(playerId);
+    this.syncReadyPlayers();
     if (this.ready.has('p1') && this.ready.has('p2')) {
       this.state.phase = 'roll';
       this.state.turnNumber = 1;
@@ -223,12 +226,17 @@ export class SessionEngine {
 
   getSnapshot(): SessionState {
     const snapshot = clone(this.state);
+    snapshot.readyPlayers = [...this.ready];
     snapshot.combat = {
       p1: this.runtimes.p1 ? this.toSnapshot(this.runtimes.p1) : null,
       p2: this.runtimes.p2 ? this.toSnapshot(this.runtimes.p2) : null
     };
     snapshot.sharedShop = this.currentShopState();
     return snapshot;
+  }
+
+  private syncReadyPlayers(): void {
+    this.state.readyPlayers = [...this.ready];
   }
 
   private currentShopState(): ShopState {

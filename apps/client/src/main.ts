@@ -40,6 +40,7 @@ root.innerHTML = `
         <div class="game-toolbar">
           <div><span class="label">방</span> <strong id="room-code">-</strong></div>
           <div><span class="label">내 ID</span> <strong id="player-id">-</strong></div>
+          <div><span class="label">모드</span> <strong id="mode-label">-</strong></div>
           <div id="phase-label" class="phase-label">대기</div>
         </div>
         <div id="warning-banner" class="warning-banner hidden" role="status" aria-live="assertive"></div>
@@ -149,6 +150,7 @@ function renderState(): void {
   document.querySelector('#coins-value')!.textContent = String(player.coins);
   document.querySelector('#weapon-value')!.textContent = player.weapon ? `${player.weapon.itemId} (${player.weapon.remainingCombatFloors ?? '∞'})` : '기본 공격';
   document.querySelector('#turn-value')!.textContent = `${sessionState.turnNumber} · ${sessionState.activePlayer === playerId ? '내 턴' : '상대 턴'}`;
+  document.querySelector('#mode-label')!.textContent = sessionState.mode === 'cpu' ? 'CPU 대전' : '1대1 온라인';
   const phaseText: Record<SessionState['phase'], string> = {
     lobby: '준비 대기',
     roll: '주사위를 굴리세요',
@@ -175,9 +177,12 @@ function renderDice(): void {
   const faces = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
   const isMine = sessionState.activePlayer === playerId;
   const canRoll = sessionState.phase === 'roll' && isMine;
+  const readyByMe = sessionState.readyPlayers.includes(playerId);
   diceFace.textContent = sessionState.lastRoll ? faces[sessionState.lastRoll - 1] : '⚀';
   diceStatus.textContent = sessionState.phase === 'lobby'
-    ? '준비 완료 후 시작'
+    ? readyByMe
+      ? sessionState.mode === 'cpu' ? '게임 시작 중' : '내 준비 완료 · 상대 대기'
+      : sessionState.mode === 'cpu' ? '준비 완료 후 시작' : '두 플레이어 준비 필요'
     : canRoll
       ? '내 턴 · 굴릴 수 있음'
       : sessionState.phase === 'roll'
@@ -227,9 +232,21 @@ function renderActions(): void {
   actionPanel.innerHTML = '';
   const isMine = sessionState.activePlayer === playerId;
   if (sessionState.phase === 'lobby') {
+    const readyByMe = sessionState.readyPlayers.includes(playerId);
+    const status = document.createElement('p');
+    status.className = 'muted';
+    status.textContent = sessionState.mode === 'cpu'
+      ? readyByMe
+        ? '준비 완료 처리됨. 게임을 시작하는 중입니다.'
+        : 'CPU가 준비되어 있습니다. 준비 완료를 누르면 1P 턴이 시작됩니다.'
+      : readyByMe
+        ? '준비 완료 처리됨. 상대가 입장하고 준비 완료할 때까지 기다리세요.'
+        : '온라인 방은 1P와 2P가 모두 준비 완료해야 시작합니다. 방 코드를 상대에게 공유하세요.';
+    actionPanel.append(status);
     const ready = document.createElement('button');
-    ready.textContent = '준비 완료';
+    ready.textContent = readyByMe ? '준비 완료됨' : '준비 완료';
     ready.className = 'primary';
+    ready.disabled = readyByMe;
     ready.onclick = () => send({ type: 'ready' });
     actionPanel.append(ready);
     return;
