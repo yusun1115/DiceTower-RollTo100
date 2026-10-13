@@ -7,7 +7,7 @@ import { Journey } from './presentation/journey';
 import { PresentationPreferences } from './presentation/preferences';
 import { GameAudio } from './presentation/audio';
 import { canvasPoint } from './presentation/scene';
-import { ActionBuffer } from './presentation/input';
+import { ActionBuffer, obsoleteInputRejection } from './presentation/input';
 
 const WS_URL = import.meta.env.VITE_WS_URL || `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.hostname}:8787`;
 const root = document.querySelector<HTMLElement>('#app');
@@ -39,6 +39,7 @@ hud.onInteraction = () => audio.unlock();
 const errorLabels: Record<string, string> = {
   'It is not your roll.': '지금은 주사위를 굴릴 차례가 아닙니다.', 'Room not found.': '방을 찾을 수 없습니다. 코드를 확인하세요.',
   'Room is full.': '이미 두 사람이 들어온 방입니다.', 'Not enough coins.': '코인이 부족합니다.',
+  'Combat is not active.': '현재 조작할 수 있는 턴이 아닙니다.',
   'Item is out of stock.': '이미 판매된 상품입니다.', 'Match is already started.': '이미 모험이 시작되었습니다.',
   'This connection already belongs to a room.': '이미 방에 입장했습니다.', 'Potion cannot be used.': '지금은 물약을 사용할 수 없습니다.',
   'Move closer to this item.':'상품 가까이 이동한 뒤 E키로 구매하세요.', 'Move closer to a shop display.':'진열대 또는 출구 가까이 이동한 뒤 E키를 누르세요.'
@@ -69,7 +70,7 @@ function send(message: ClientMessage): void {
 
 function handle(message: ServerMessage): void {
   if (message.type === 'welcome') { playerId=message.playerId; hud.welcome(playerId,message.roomCode); return; }
-  if (message.type === 'error') { hud.error(errorLabels[message.message] ?? message.message); return; }
+  if (message.type === 'error') { if(!obsoleteInputRejection(message.message,state,playerId))hud.error(errorLabels[message.message] ?? message.message); return; }
   if (message.type === 'notice') { hud.log(message.message === 'Connected to Tower Race.' ? '탑의 문이 열렸습니다.' : message.message); return; }
   const now=performance.now();
   if (state && (state.sessionId!==message.state.sessionId || state.turnNumber!==message.state.turnNumber || state.activePlayer!==message.state.activePlayer || state.phase!==message.state.phase)) clearInput(false);

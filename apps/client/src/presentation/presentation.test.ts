@@ -5,7 +5,7 @@ import { diceResultLabel, Journey } from './journey';
 import { canvasPoint, interpolate, SceneView } from './scene';
 import { Effects, LABEL_LIMIT, PARTICLE_LIMIT } from './effects';
 import { readPreferences } from './preferences';
-import { ActionBuffer } from './input';
+import { ActionBuffer, obsoleteInputRejection } from './input';
 
 const snapshot=()=>new SessionEngine({sessionId:'test',roomCode:'TEST',mode:'cpu',seed:'test'}).getSnapshot();
 const event=(id:number, kind:PresentationEvent['kind']='roll'):PresentationEvent=>({id,kind,sessionId:'test',playerId:'p1',turnNumber:1,floor:6,roll:6,fromFloor:0,toFloor:6});
@@ -36,6 +36,16 @@ describe('expression event synchronization',()=> {
 });
 
 describe('bounded journey and scene presentation',()=> {
+  it('drops only obsolete input rejections after a handoff, preserving real errors',()=> {
+    const error='Combat is not active.';
+    expect(obsoleteInputRejection(error,{phase:'roll',activePlayer:'p1'},'p1')).toBe(true);
+    expect(obsoleteInputRejection(error,{phase:'combat',activePlayer:'p2'},'p1')).toBe(true);
+    expect(obsoleteInputRejection(error,{phase:'combat',activePlayer:'p1'},'p1')).toBe(false);
+    expect(obsoleteInputRejection(error,{phase:'shop',activePlayer:'p1'},'p1')).toBe(false);
+    expect(obsoleteInputRejection(error,null,'p1')).toBe(false);
+    expect(obsoleteInputRejection('Not enough coins.',{phase:'shop',activePlayer:'p1'},'p1')).toBe(false);
+    expect(obsoleteInputRejection('Move closer to this item.',{phase:'roll',activePlayer:'p1'},'p1')).toBe(false);
+  });
   it('does not announce tumbling preview faces as confirmed dice results',()=> {
     expect(diceResultLabel(6,true)).toContain('결과 미확정');expect(diceResultLabel(6,false)).toBe('주사위 결과 6');
     expect(diceResultLabel(null,false)).toBe('아직 확정된 주사위 결과 없음');
