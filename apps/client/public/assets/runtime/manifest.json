@@ -1,0 +1,140 @@
+{
+  "hero": {
+    "source": "characters/animations/player-hero-animations.png",
+    "cell": 96,
+    "frames": 16,
+    "width": 1536,
+    "height": 96,
+    "pivot": [
+      0.5,
+      1
+    ],
+    "bytes": 68286
+  },
+  "goblin": {
+    "source": "characters/animations/monster-goblin-animations.png",
+    "cell": 96,
+    "frames": 16,
+    "width": 1536,
+    "height": 96,
+    "pivot": [
+      0.5,
+      1
+    ],
+    "bytes": 59874
+  },
+  "slime": {
+    "source": "characters/animations/monster-slime-animations.png",
+    "cell": 96,
+    "frames": 16,
+    "width": 1536,
+    "height": 96,
+    "pivot": [
+      0.5,
+      1
+    ],
+    "bytes": 68810
+  },
+  "bat": {
+    "source": "characters/animations/monster-bat-animations.png",
+    "cell": 96,
+    "frames": 16,
+    "width": 1536,
+    "height": 96,
+    "pivot": [
+      0.5,
+      1
+    ],
+    "bytes": 50120
+  },
+  "ghost": {
+    "source": "characters/animations/hazard-ghost-animations.png",
+    "cell": 96,
+    "frames": 16,
+    "width": 1536,
+    "height": 96,
+    "pivot": [
+      0.5,
+      1
+    ],
+    "bytes": 103766
+  },
+  "mini": {
+    "source": "characters/animations/boss-mini-animations.png",
+    "cell": 96,
+    "frames": 16,
+    "width": 1536,
+    "height": 96,
+    "pivot": [
+      0.5,
+      1
+    ],
+    "bytes": 78050
+  },
+  "final": {
+    "source": "characters/animations/boss-final-animations.png",
+    "cell": 96,
+    "frames": 16,
+    "width": 1536,
+    "height": 96,
+    "pivot": [
+      0.5,
+      1
+    ],
+    "bytes": 108376
+  },
+  "dice": {
+    "source": "ui/dice-faces.png",
+    "cell": 160,
+    "frames": 6,
+    "width": 960,
+    "height": 160,
+    "pivot": [
+      0.5,
+      1
+    ],
+    "bytes": 40342
+  },
+  "items": {
+    "source": "items/item-icons.png",
+    "cell": 96,
+    "frames": 8,
+    "width": 768,
+    "height": 96,
+    "pivot": [
+      0.5,
+      1
+    ],
+    "bytes": 40766
+  },
+  "chest": {
+    "source": "props/chest-states.png",
+    "cell": 96,
+    "frames": 2,
+    "width": 192,
+    "height": 96,
+    "pivot": [
+      0.5,
+      1
+    ],
+    "bytes": 11754
+  },
+  "tower": {
+    "source": "environment/backgrounds/tower-progression-background.png",
+    "width": 512,
+    "height": 768,
+    "bytes": 101452
+  },
+  "room": {
+    "source": "environment/backgrounds/dungeon-normal-room.png",
+    "width": 960,
+    "height": 540,
+    "bytes": 62862
+  },
+  "shop": {
+    "source": "environment/backgrounds/shop-interior.png",
+    "width": 960,
+    "height": 640,
+    "bytes": 102020
+  }
+}

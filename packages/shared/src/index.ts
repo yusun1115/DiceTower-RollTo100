@@ -4,3 +4,4 @@ export * from './protocol.js';
 export * from './rng.js';
 export * from './validation.js';
 export * from './session.js';
+export * from './presentation.js';

@@ -61,9 +61,19 @@ describe('WebSocket client integration', () => {
       expect(pvpRoll.state.activePlayer).toBe('p1');
 
       const pvpFloorPromise = nextMessage(first, (message) => message.type === 'state' && (message.state.phase === 'combat' || message.state.phase === 'shop'));
+      const otherFloorPromise = nextMessage(second, (message) => message.type === 'state' && (message.state.phase === 'combat' || message.state.phase === 'shop'));
       send(first, { type: 'roll' });
       const pvpFloor = await pvpFloorPromise;
+      const otherFloor = await otherFloorPromise;
       if (pvpFloor.type !== 'state') throw new Error('Expected PvP floor state');
+      if (otherFloor.type !== 'state') throw new Error('Expected other client floor state');
+      expect(otherFloor.state.presentationEvents).toEqual(pvpFloor.state.presentationEvents);
+      expect(pvpFloor.state.presentationEvents?.at(-1)?.kind).toBe('roll');
+      if(pvpFloor.state.phase==='combat') {
+        const rejected=nextMessage(second,message=>message.type==='error');
+        send(second,{type:'combat',command:{moveX:1,moveY:0,aim:{x:1,y:0},attack:true,dash:true}});
+        expect((await rejected).type).toBe('error');
+      }
       const hostedPvp = server.host.getSession(firstWelcome.roomCode);
       if (!hostedPvp) throw new Error('Expected hosted PvP session');
       if (pvpFloor.state.phase === 'combat') {

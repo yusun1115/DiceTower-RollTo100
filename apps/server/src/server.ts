@@ -2,6 +2,7 @@ import { createServer, type Server } from 'node:http';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import { SessionHost } from './session-host.js';
+import { PRESENTATION_VERSION } from '@tower/shared';
 
 export interface TowerServerHandle {
   httpServer: Server;
@@ -14,7 +15,7 @@ export interface TowerServerHandle {
 export function createTowerServer(): TowerServerHandle {
   const httpServer = createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ service: 'tower-race', status: 'ok' }));
+    response.end(JSON.stringify({ service: 'tower-race', status: 'ok', presentationVersion: PRESENTATION_VERSION, commit: process.env.RENDER_GIT_COMMIT ?? 'development' }));
   });
   const host = new SessionHost();
   const webSocketServer = new WebSocketServer({ server: httpServer });

@@ -1,477 +1,145 @@
 import './styles.css';
-import type { Difficulty, PlayerId, ServerMessage, SessionState } from '@tower/shared';
+import type { ClientMessage, PlayerId, ServerMessage, SessionState, Vec2 } from '@tower/shared';
+import { HUD, itemName } from './hud';
+import { Renderer } from './renderer';
+import { EventRouter } from './presentation/event-router';
+import { Journey } from './presentation/journey';
+import { PresentationPreferences } from './presentation/preferences';
+import { GameAudio } from './presentation/audio';
+import { canvasPoint } from './presentation/scene';
+import { ActionBuffer } from './presentation/input';
 
-const configuredWsUrl = import.meta.env.VITE_WS_URL;
-const defaultWsProtocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-const WS_URL = configuredWsUrl || `${defaultWsProtocol}//${window.location.hostname}:8787`;
-const root = document.querySelector<HTMLDivElement>('#app');
+const WS_URL = import.meta.env.VITE_WS_URL || `${location.protocol === 'https:' ? 'wss:' : 'ws:'}//${location.hostname}:8787`;
+const root = document.querySelector<HTMLElement>('#app');
 if (!root) throw new Error('Missing #app root');
-
-root.innerHTML = `
-  <main class="app-shell">
-    <header class="brand">
-      <div>
-        <p class="eyebrow">100 FLOOR TOWER RACE</p>
-        <h1>Tower Race</h1>
-      </div>
-      <div id="connection-status" class="pill">연결 중...</div>
-    </header>
-    <section id="menu-panel" class="panel menu-panel">
-      <h2>게임 시작</h2>
-      <p class="muted">주사위를 굴리고 던전을 돌파해 100층 보스를 먼저 처치하세요.</p>
-      <div class="menu-grid">
-        <button id="cpu-button" class="primary">CPU 대전</button>
-        <select id="difficulty-select" aria-label="CPU 난이도">
-          <option value="easy">쉬움</option>
-          <option value="normal" selected>보통</option>
-          <option value="hard">어려움</option>
-        </select>
-      </div>
-      <div class="divider"><span>온라인 방</span></div>
-      <div class="menu-grid">
-        <button id="create-button">방 만들기</button>
-        <input id="room-input" maxlength="5" placeholder="방 코드" aria-label="방 코드" />
-        <button id="join-button">참가</button>
-      </div>
-      <p id="menu-message" class="message"></p>
-    </section>
-    <section id="game-panel" class="game-layout hidden">
-      <div class="game-main">
-        <div class="game-toolbar">
-          <div><span class="label">방</span> <strong id="room-code">-</strong></div>
-          <div><span class="label">내 ID</span> <strong id="player-id">-</strong></div>
-          <div><span class="label">모드</span> <strong id="mode-label">-</strong></div>
-          <div id="phase-label" class="phase-label">대기</div>
-        </div>
-        <div id="warning-banner" class="warning-banner hidden" role="status" aria-live="assertive"></div>
-        <canvas id="game-canvas" width="960" height="540" aria-label="Tower Race 던전"></canvas>
-        <div class="controls-hint">WASD 이동 · 마우스 조준/클릭 공격 · Space 대시 · E 상자 열기</div>
-      </div>
-      <aside class="sidebar">
-        <div class="panel stats-panel">
-          <div class="stat-row"><span>현재 층</span><strong id="floor-value">0</strong></div>
-          <div class="stat-row"><span>내 하트</span><strong id="hearts-value">♥♥♥</strong></div>
-          <div class="stat-row"><span>내 코인</span><strong id="coins-value">0</strong></div>
-          <div class="stat-row"><span>내 무기</span><strong id="weapon-value">기본 공격</strong></div>
-          <div class="stat-row"><span>턴</span><strong id="turn-value">-</strong></div>
-        </div>
-        <div class="panel dice-panel">
-          <div class="dice-heading"><h3>다음 이동</h3><span id="dice-status" class="muted">준비 대기</span></div>
-          <div id="dice-face" class="dice-face" aria-label="최근 주사위 결과">⚀</div>
-          <button id="dice-button" class="primary dice-button" disabled>주사위 굴리기</button>
-        </div>
-        <div id="action-panel" class="panel action-panel"></div>
-        <div id="shop-panel" class="panel shop-panel hidden"></div>
-        <div id="event-log" class="event-log" aria-live="polite"></div>
-      </aside>
-    </section>
-  </main>
-`;
-
-const menuPanel = document.querySelector<HTMLElement>('#menu-panel')!;
-const gamePanel = document.querySelector<HTMLElement>('#game-panel')!;
-const menuMessage = document.querySelector<HTMLElement>('#menu-message')!;
-const connectionStatus = document.querySelector<HTMLElement>('#connection-status')!;
-const canvas = document.querySelector<HTMLCanvasElement>('#game-canvas')!;
-const context = canvas.getContext('2d')!;
-const actionPanel = document.querySelector<HTMLElement>('#action-panel')!;
-const shopPanel = document.querySelector<HTMLElement>('#shop-panel')!;
-const eventLog = document.querySelector<HTMLElement>('#event-log')!;
-const diceFace = document.querySelector<HTMLElement>('#dice-face')!;
-const diceStatus = document.querySelector<HTMLElement>('#dice-status')!;
-const diceButton = document.querySelector<HTMLButtonElement>('#dice-button')!;
+const journey = new Journey(); const router = new EventRouter();
+const preferences = new PresentationPreferences(); const audio = new GameAudio();
+const hud = new HUD(root, send, journey, preferences);
+const renderer = new Renderer(hud.canvas, hud.diceCanvas);
 const keys = new Set<string>();
-const pointer = { x: canvas.width / 2, y: canvas.height / 2, down: false };
-let socket: WebSocket | null = null;
-const pendingMessages: object[] = [];
-let playerId: PlayerId | null = null;
-let sessionState: SessionState | null = null;
-let lastState: SessionState | null = null;
-let readySent = false;
-let lastCommandAt = 0;
-let lastWarningKey = '';
-let audioContext: AudioContext | null = null;
+const actions = new ActionBuffer();
+let pointer: Vec2 = { x: 480, y: 270 };
+let aim: Vec2 = { x: 1, y: 0 };
+let down = false; let socket: WebSocket | null = null;
+let entrance: ClientMessage | null = null;
+let playerId: PlayerId | null = null; let state: SessionState | null = null;
+let lastCommandAt = 0; let dangerKey = '';
+let previewSend: ((message: ClientMessage) => void) | null = null;
+
+function applyPreferences() {
+  audio.enabled = preferences.values.sound;
+  if (!audio.enabled) audio.stop();
+  document.documentElement.classList.toggle('reduced-motion', preferences.reduced);
+  if (preferences.reduced) { renderer.effects.particles=[]; renderer.effects.slashes=[]; renderer.effects.dashes=[]; renderer.effects.shakeUntil=0; }
+}
+preferences.onChange = applyPreferences; applyPreferences();
+hud.onInteraction = () => audio.unlock();
+
+const errorLabels: Record<string, string> = {
+  'It is not your roll.': '지금은 주사위를 굴릴 차례가 아닙니다.', 'Room not found.': '방을 찾을 수 없습니다. 코드를 확인하세요.',
+  'Room is full.': '이미 두 사람이 들어온 방입니다.', 'Not enough coins.': '코인이 부족합니다.',
+  'Item is out of stock.': '이미 판매된 상품입니다.', 'Match is already started.': '이미 모험이 시작되었습니다.',
+  'This connection already belongs to a room.': '이미 방에 입장했습니다.', 'Potion cannot be used.': '지금은 물약을 사용할 수 없습니다.'
+};
 
 function connect(): void {
   if (socket && socket.readyState <= WebSocket.OPEN) return;
-  socket = new WebSocket(WS_URL);
-  socket.addEventListener('open', () => {
-    connectionStatus.textContent = '연결됨';
-    connectionStatus.classList.add('connected');
-    for (const message of pendingMessages.splice(0)) socket?.send(JSON.stringify(message));
+  hud.connection(false, '연결 중'); socket = new WebSocket(WS_URL);
+  socket.addEventListener('open', () => { hud.connection(true, '연결됨'); if (entrance) { socket!.send(JSON.stringify(entrance)); entrance=null; } });
+  socket.addEventListener('message', event => {
+    try { handle(JSON.parse(event.data) as ServerMessage); }
+    catch { hud.error('서버 상태를 읽지 못했습니다. 페이지를 새로고침해 주세요.'); }
   });
   socket.addEventListener('close', () => {
-    connectionStatus.textContent = '연결 끊김';
-    connectionStatus.classList.remove('connected');
+    entrance=null; journey.cancel(); clearInput(false); audio.stop(); hud.connection(false, '연결 끊김');
+    if (playerId) hud.error('서버 연결이 끊겼습니다. 다시 시작하려면 페이지를 새로고침하세요.');
   });
-  socket.addEventListener('error', () => {
-    connectionStatus.textContent = '서버 확인 필요';
-  });
-  socket.addEventListener('message', (event) => {
-    const message = JSON.parse(event.data) as ServerMessage;
-    handleServerMessage(message);
-  });
+  socket.addEventListener('error', () => { hud.connection(false,'서버 연결 대기'); });
 }
 
-function send(message: object): void {
-  if (!socket || socket.readyState === WebSocket.CLOSED) connect();
-  if (!socket) {
-    showMessage('서버에 연결되지 않았습니다. pnpm dev를 실행했는지 확인하세요.');
-    return;
-  }
-  if (socket.readyState === WebSocket.OPEN) {
-    socket.send(JSON.stringify(message));
-    return;
-  }
-  if (socket.readyState === WebSocket.CONNECTING) {
-    pendingMessages.push(message);
-    return;
-  }
-  showMessage('서버 연결을 확인한 뒤 다시 시도하세요.');
+function send(message: ClientMessage): void {
+  if (message.type === 'roll') audio.play('pending', performance.now());
+  if (previewSend) { previewSend(message); return; }
+  if (socket?.readyState === WebSocket.OPEN) { socket.send(JSON.stringify(message)); return; }
+  if (message.type === 'create' || message.type === 'join') { entrance=message; connect(); return; }
+  hud.error('서버에 연결되지 않았습니다. 연결 상태를 확인하세요.');
 }
 
-function handleServerMessage(message: ServerMessage): void {
-  if (message.type === 'welcome') {
-    playerId = message.playerId;
-    readySent = false;
-    document.querySelector('#room-code')!.textContent = message.roomCode;
-    document.querySelector('#player-id')!.textContent = message.playerId;
-    menuPanel.classList.add('hidden');
-    gamePanel.classList.remove('hidden');
-    appendLog(`${message.roomCode} 방에 입장했습니다.`);
-    return;
-  }
-  if (message.type === 'error') {
-    readySent = false;
-    showMessage(message.message);
-    appendLog(`오류: ${message.message}`);
-    renderActions();
-    renderDice();
-    return;
-  }
-  if (message.type === 'notice') {
-    appendLog(message.message);
-    return;
-  }
-  lastState = sessionState;
-  sessionState = message.state;
-  if (sessionState.phase !== 'lobby') readySent = false;
-  if (playerId && (sessionState.readyPlayers ?? []).includes(playerId)) readySent = true;
-  renderState();
-}
-
-function renderState(): void {
-  if (!sessionState || !playerId) return;
-  const player = sessionState.players[playerId];
-  document.querySelector('#floor-value')!.textContent = String(player.floor);
-  document.querySelector('#hearts-value')!.textContent = `${'♥'.repeat(player.hearts)}${'♡'.repeat(player.maxHearts - player.hearts)}`;
-  document.querySelector('#coins-value')!.textContent = String(player.coins);
-  document.querySelector('#weapon-value')!.textContent = player.weapon ? `${player.weapon.itemId} (${player.weapon.remainingCombatFloors ?? '∞'})` : '기본 공격';
-  document.querySelector('#turn-value')!.textContent = `${sessionState.turnNumber} · ${sessionState.activePlayer === playerId ? '내 턴' : '상대 턴'}`;
-  document.querySelector('#mode-label')!.textContent = sessionState.mode === 'cpu' ? 'CPU 대전' : '1대1 온라인';
-  const phaseText: Record<SessionState['phase'], string> = {
-    lobby: '준비 대기',
-    roll: '주사위를 굴리세요',
-    'floor-setup': '층 준비',
-    combat: '던전 전투',
-    shop: '상점',
-    resolved: '턴 정리',
-    victory: sessionState.winner === playerId ? '승리!' : '패배'
-  };
-  document.querySelector('#phase-label')!.textContent = phaseText[sessionState.phase];
-  if (lastState && lastState.phase !== sessionState.phase) {
-    appendLog(phaseText[sessionState.phase]);
-    beep(sessionState.phase === 'victory' ? 740 : sessionState.phase === 'shop' ? 520 : 320);
-  }
-  renderActions();
-  renderDice();
-  renderShop();
-  renderWarnings();
-  draw();
-}
-
-function renderDice(): void {
-  if (!sessionState || !playerId) return;
-  const faces = ['⚀', '⚁', '⚂', '⚃', '⚄', '⚅'];
-  const isMine = sessionState.activePlayer === playerId;
-  const canRoll = sessionState.phase === 'roll' && isMine;
-  const readyPlayers = sessionState.readyPlayers ?? [];
-  const lastRoll = sessionState.lastRoll ?? null;
-  const readyByMe = readySent || readyPlayers.includes(playerId);
-  diceFace.textContent = lastRoll ? faces[lastRoll - 1] : '⚀';
-  diceStatus.textContent = sessionState.phase === 'lobby'
-    ? readyByMe
-      ? sessionState.mode === 'cpu' ? '게임 시작 중' : '내 준비 완료 · 상대 대기'
-      : sessionState.mode === 'cpu' ? '준비 완료 후 시작' : '두 플레이어 준비 필요'
-    : canRoll
-      ? '내 턴 · 굴릴 수 있음'
-      : sessionState.phase === 'roll'
-        ? '상대 턴'
-        : `최근 결과 ${lastRoll ?? '-'}칸`;
-  diceButton.disabled = !canRoll;
-  diceButton.textContent = canRoll ? '주사위 굴리기' : '주사위 대기 중';
-  diceButton.onclick = () => {
-    if (canRoll) send({ type: 'roll' });
-  };
-}
-
-function renderWarnings(): void {
-  if (!sessionState || !playerId) return;
-  const banner = document.querySelector<HTMLElement>('#warning-banner')!;
-  const warnings: string[] = [];
-  const player = sessionState.players[playerId];
-  const combat = sessionState.combat[playerId];
-  if (sessionState.phase === 'victory') {
-    warnings.push(sessionState.winner === playerId ? '최종보스를 처치했습니다! 승리!' : '상대가 최종보스를 먼저 처치했습니다.');
-  } else if (sessionState.phase === 'combat') {
-    if (sessionState.floor?.type === 'final-boss') warnings.push('최종보스 층 · 모든 필수 적을 처치하세요');
-    else if (sessionState.floor?.type === 'mini-boss') warnings.push('미니보스 층 · 보스가 살아 있으면 턴이 끝나지 않습니다');
-    if (player.hearts <= 1) warnings.push('하트가 1개입니다 · 다음 피격은 사망합니다');
-    if (combat?.ghost?.active) warnings.push('무적 유령 출현 · 닿으면 즉사합니다');
-    else if (combat && combat.timeRemainingMs <= 10_000) warnings.push(`시간 임박 · ${Math.ceil(combat.timeRemainingMs / 1000)}초`);
-  } else if (sessionState.phase === 'shop') {
-    if (sessionState.sharedShop.restockAfterTurns === 1) warnings.push('다음 플레이어 턴 종료 후 상점 재입고');
-    else warnings.push('공유 상점 · 구매한 상품은 상대에게도 사라집니다');
-  }
-  if (lastState) {
-    const death = (['p1', 'p2'] as PlayerId[]).some((id) => sessionState!.players[id].floor < lastState!.players[id].floor);
-    if (death) warnings.push('사망 처리 · 현재 층에서 3층 내려갑니다');
-    if (lastState.sharedShop.restockAfterTurns !== null && sessionState.sharedShop.restockAfterTurns === null) {
-      warnings.push('상점 재고가 새로 채워졌습니다');
+function handle(message: ServerMessage): void {
+  if (message.type === 'welcome') { playerId=message.playerId; hud.welcome(playerId,message.roomCode); return; }
+  if (message.type === 'error') { hud.error(errorLabels[message.message] ?? message.message); return; }
+  if (message.type === 'notice') { hud.log(message.message === 'Connected to Tower Race.' ? '탑의 문이 열렸습니다.' : message.message); return; }
+  const now=performance.now();
+  if (state && (state.sessionId!==message.state.sessionId || state.turnNumber!==message.state.turnNumber || state.activePlayer!==message.state.activePlayer || state.phase!==message.state.phase)) clearInput(false);
+  state=message.state;
+  if (document.hidden) { router.reset(state); journey.reset(); renderer.accept(state,[],now,preferences.reduced); return; }
+  const events=router.consume(state); journey.synchronize(state); renderer.accept(state,events,now,preferences.reduced);
+  for (const event of events) {
+    journey.accept(event,now,playerId ?? 'p1',state.players[event.playerId].name); audio.play(event.kind,now); hud.react(event,now);
+    if (['clear','death','victory','item','restock'].includes(event.kind)) {
+      const name=state.players[event.playerId].name;
+      const detail=event.kind==='item'?`${name} · ${itemName(event.itemId)} 획득`:event.kind==='death'?`${name} · ${event.fromFloor} → ${event.toFloor}층`:event.kind==='clear'?`${name} · ${event.floor}층 클리어`:event.kind==='victory'?`${name} · 최종보스 격파`:`${event.floor}층 상점 재입고`;
+      hud.log(detail);
     }
   }
-  const key = warnings.join('|');
-  banner.textContent = warnings.join('  ·  ');
-  banner.classList.toggle('hidden', warnings.length === 0);
-  if (key && key !== lastWarningKey) beep(sessionState.phase === 'victory' ? 740 : 220);
-  lastWarningKey = key;
+  const combat=state.combat[state.activePlayer];
+  const warning=state.phase==='combat' && combat ? combat.ghost?.active?'ghost':combat.timeRemainingMs<=10000?'timer':state.players[state.activePlayer].hearts<=1?'heart':'' : '';
+  const key=warning ? `${state.turnNumber}:${warning}` : '';
+  if(key&&key!==dangerKey)audio.play('ghost',now);dangerKey=key;
+  hud.update(state);
 }
 
-function renderActions(): void {
-  if (!sessionState || !playerId) return;
-  actionPanel.innerHTML = '';
-  const isMine = sessionState.activePlayer === playerId;
-  if (sessionState.phase === 'lobby') {
-    const readyByMe = readySent || (sessionState.readyPlayers ?? []).includes(playerId);
-    const status = document.createElement('p');
-    status.className = 'muted';
-    status.textContent = sessionState.mode === 'cpu'
-      ? readyByMe
-        ? '준비 완료 처리됨. 게임을 시작하는 중입니다.'
-        : 'CPU가 준비되어 있습니다. 준비 완료를 누르면 1P 턴이 시작됩니다.'
-      : readyByMe
-        ? '준비 완료 처리됨. 상대가 입장하고 준비 완료할 때까지 기다리세요.'
-        : '온라인 방은 1P와 2P가 모두 준비 완료해야 시작합니다. 방 코드를 상대에게 공유하세요.';
-    actionPanel.append(status);
-    const ready = document.createElement('button');
-    ready.textContent = readyByMe ? '준비 완료됨' : '준비 완료';
-    ready.className = 'primary';
-    ready.disabled = readyByMe;
-    ready.onclick = () => {
-      readySent = true;
-      renderActions();
-      renderDice();
-      send({ type: 'ready' });
-    };
-    actionPanel.append(ready);
-    return;
+function interactive(target: EventTarget | null): boolean { return target instanceof Element && Boolean(target.closest('input,select,textarea,button,summary,a,[contenteditable="true"]')); }
+window.addEventListener('keydown',event=> {
+  if(interactive(event.target))return;
+  if(event.code==='Space'&&state?.phase==='combat')event.preventDefault();
+  keys.add(event.key.toLowerCase());if(event.isTrusted)audio.unlock();
+  if (!event.repeat && state?.phase==='combat' && state.activePlayer===playerId) {
+    if (event.code==='Space') actions.pulse('dash',performance.now());
+    if (event.key.toLowerCase()==='e') actions.pulse('interact',performance.now());
   }
-  if (sessionState.phase === 'roll' && isMine) {
-    const status = document.createElement('p');
-    status.className = 'muted';
-    status.textContent = '위 주사위 카드에서 이동할 층을 결정하세요.';
-    actionPanel.append(status);
-    return;
-  }
-  if (sessionState.phase === 'combat') {
-    const status = document.createElement('p');
-    status.className = 'muted';
-    status.textContent = isMine ? '던전을 클리어하세요.' : '상대 플레이어의 전투를 관전 중입니다.';
-    actionPanel.append(status);
-    if (isMine) {
-      const potion = document.createElement('button');
-      potion.textContent = `회복 물약 사용 (${sessionState.players[playerId].potions})`;
-      potion.disabled = sessionState.players[playerId].potions === 0;
-      potion.onclick = () => send({ type: 'use-potion' });
-      actionPanel.append(potion);
+});
+window.addEventListener('keyup',event=>keys.delete(event.key.toLowerCase()));
+function clearInput(notify=true): void {
+  keys.clear();down=false;actions.clear();
+  if(notify&&state?.phase==='combat'&&state.activePlayer===playerId&&(previewSend||socket?.readyState===WebSocket.OPEN))send({type:'combat',command:{moveX:0,moveY:0,aim}});
+}
+window.addEventListener('blur',()=>clearInput());
+document.addEventListener('visibilitychange',()=> {
+  clearInput();router.reset(state);journey.reset();renderer.effects.clear();renderer.view.previous=null;audio.stop();
+  if(state&&!document.hidden)hud.update(state);
+});
+document.addEventListener('focusin',event=> { if(interactive(event.target))clearInput(); });
+hud.canvas.tabIndex=0;
+hud.canvas.addEventListener('pointermove',event=> { pointer=canvasPoint({x:event.clientX,y:event.clientY},hud.canvas.getBoundingClientRect(),renderer.shakeOffset); });
+hud.canvas.addEventListener('pointerdown',event=> {
+  if(event.button!==0)return;
+  pointer=canvasPoint({x:event.clientX,y:event.clientY},hud.canvas.getBoundingClientRect(),renderer.shakeOffset);down=true;hud.canvas.focus({preventScroll:true});audio.unlock();
+  if (state?.phase==='combat' && state.activePlayer===playerId) actions.pulse('attack',performance.now());
+});
+window.addEventListener('pointerup',()=> { down=false; });window.addEventListener('pointercancel',()=>clearInput());
+
+const renderCosts:number[]=[];const frameIntervals:number[]=[];let previousFrame=0;let frames=0;
+function frame(now:number):void {
+  if(!document.hidden) {
+    const combat=state&&playerId?state.combat[playerId]:null;
+    if(combat)aim={x:pointer.x-combat.playerPosition.x,y:pointer.y-combat.playerPosition.y};
+    if(state&&playerId&&state.phase==='combat'&&state.activePlayer===playerId&&now-lastCommandAt>45) {
+      send({type:'combat',command:{moveX:Number(keys.has('d'))-Number(keys.has('a')),moveY:Number(keys.has('s'))-Number(keys.has('w')),aim,attack:actions.active('attack',down,now),dash:actions.active('dash',keys.has(' '),now),interact:actions.active('interact',keys.has('e'),now)}});lastCommandAt=now;
     }
-    return;
-  }
-  if (sessionState.phase === 'shop') {
-    const status = document.createElement('p');
-    status.className = 'muted';
-    status.textContent = isMine ? '원하는 상품을 여러 개 구매하세요.' : '상대가 공유 상점을 이용 중입니다.';
-    actionPanel.append(status);
-  }
-}
-
-function renderShop(): void {
-  if (!sessionState || sessionState.phase !== 'shop') {
-    shopPanel.classList.add('hidden');
-    return;
-  }
-  shopPanel.classList.remove('hidden');
-  shopPanel.innerHTML = '<h3>공유 상점</h3>';
-  const offers = sessionState.sharedShop.offers;
-  const player = playerId ? sessionState.players[playerId] : null;
-  for (const offer of offers) {
-    const button = document.createElement('button');
-    button.className = 'shop-item';
-    button.disabled = sessionState.activePlayer !== playerId || !player || player.coins < offer.price;
-    button.innerHTML = `<span>${offer.itemId}</span><strong>${offer.price} 코인</strong>`;
-    button.onclick = () => send({ type: 'buy', slotId: offer.slotId });
-    shopPanel.append(button);
-  }
-  const footer = document.createElement('div');
-  footer.className = 'shop-footer';
-  footer.innerHTML = `<span>재고 ${offers.length}개 · ${sessionState.sharedShop.restockAfterTurns === null ? '재입고 대기 없음' : `${sessionState.sharedShop.restockAfterTurns}턴 후 재입고`}</span>`;
-  const finish = document.createElement('button');
-  finish.textContent = '쇼핑 끝내기';
-  finish.disabled = sessionState.activePlayer !== playerId;
-  finish.onclick = () => send({ type: 'finish-shop' });
-  footer.append(finish);
-  shopPanel.append(footer);
-}
-
-function draw(): void {
-  context.clearRect(0, 0, canvas.width, canvas.height);
-  context.fillStyle = '#111827';
-  context.fillRect(0, 0, canvas.width, canvas.height);
-  if (!sessionState) return;
-  const blueprint = sessionState.floor;
-  const combat = playerId ? sessionState.combat[playerId] : null;
-  if (blueprint) {
-    context.fillStyle = blueprint.type === 'shop' ? '#193329' : '#1f2937';
-    context.fillRect(16, 16, blueprint.width - 32, blueprint.height - 32);
-    context.strokeStyle = blueprint.type === 'final-boss' ? '#f59e0b' : blueprint.type === 'mini-boss' ? '#ef4444' : '#475569';
-    context.lineWidth = 4;
-    context.strokeRect(16, 16, blueprint.width - 32, blueprint.height - 32);
-    context.fillStyle = '#374151';
-    for (const obstacle of blueprint.obstacles) context.fillRect(obstacle.x, obstacle.y, obstacle.width, obstacle.height);
-  }
-  if (!combat) {
-    context.fillStyle = '#94a3b8';
-    context.font = '20px system-ui';
-    context.fillText(sessionState.phase === 'shop' ? '상점층' : '주사위를 굴리면 던전이 열립니다', 300, 280);
-    return;
-  }
-  for (const chest of combat.chests) {
-    if (!chest.opened) {
-      context.fillStyle = '#f59e0b';
-      context.fillRect(chest.position.x - 10, chest.position.y - 8, 20, 16);
+    const started=performance.now();renderer.draw(now,preferences.reduced,playerId,aim);hud.frame(now);
+    if(state) { const face=preferences.reduced?journey.pending?null:journey.travel?.roll??state.lastRoll??null:journey.face(state,now);renderer.drawDice(face);hud.setDiceLabel(face,Boolean(journey.pending)||Boolean(!preferences.reduced&&journey.travel&&now-journey.travel.at<160)); }
+    if(import.meta.env.DEV){
+      renderCosts.push(performance.now()-started);frameIntervals.push(previousFrame?now-previousFrame:16.7);
+      if(renderCosts.length>120){renderCosts.shift();frameIntervals.shift();}
+      if(++frames%120===0){root!.dataset.renderP95=[...renderCosts].sort((a,b)=>a-b)[Math.floor(renderCosts.length*.95)].toFixed(2);root!.dataset.fps=(1000/(frameIntervals.reduce((a,b)=>a+b,0)/frameIntervals.length)).toFixed(1);}
     }
   }
-  for (const hazard of combat.hazards) {
-    context.fillStyle = 'rgba(239, 68, 68, 0.38)';
-    context.beginPath();
-    context.arc(hazard.position.x, hazard.position.y, hazard.radius, 0, Math.PI * 2);
-    context.fill();
-  }
-  for (const monster of combat.monsters) {
-    if (!monster.alive) continue;
-    context.fillStyle = monster.type.includes('boss') ? '#dc2626' : '#a855f7';
-    context.beginPath();
-    context.arc(monster.position.x, monster.position.y, monster.type.includes('boss') ? 26 : 16, 0, Math.PI * 2);
-    context.fill();
-    context.fillStyle = '#f8fafc';
-    context.font = '10px system-ui';
-    context.fillText(`${Math.max(0, Math.ceil(monster.hp))}`, monster.position.x - 8, monster.position.y - 22);
-  }
-  for (const projectile of combat.projectiles) {
-    context.fillStyle = '#fbbf24';
-    context.beginPath();
-    context.arc(projectile.position.x, projectile.position.y, 5, 0, Math.PI * 2);
-    context.fill();
-  }
-  if (combat.ghost?.active) {
-    context.fillStyle = 'rgba(226, 232, 240, 0.72)';
-    context.beginPath();
-    context.arc(combat.ghost.position.x, combat.ghost.position.y, 24, 0, Math.PI * 2);
-    context.fill();
-  }
-  context.fillStyle = '#38bdf8';
-  context.beginPath();
-  context.arc(combat.playerPosition.x, combat.playerPosition.y, 14, 0, Math.PI * 2);
-  context.fill();
-  context.fillStyle = '#f8fafc';
-  context.font = '14px system-ui';
-  context.fillText(`${Math.ceil(combat.timeRemainingMs / 1000)}s`, 32, 48);
+  previousFrame=now;requestAnimationFrame(frame);
 }
 
-function showMessage(message: string): void {
-  menuMessage.textContent = message;
-}
-
-function appendLog(message: string): void {
-  const line = document.createElement('div');
-  line.textContent = message;
-  eventLog.prepend(line);
-  while (eventLog.children.length > 6) eventLog.lastElementChild?.remove();
-}
-
-function beep(frequency: number): void {
-  try {
-    audioContext ??= new AudioContext();
-    const oscillator = audioContext.createOscillator();
-    const gain = audioContext.createGain();
-    oscillator.frequency.value = frequency;
-    gain.gain.value = 0.04;
-    oscillator.connect(gain).connect(audioContext.destination);
-    oscillator.start();
-    oscillator.stop(audioContext.currentTime + 0.08);
-  } catch {
-    // Browser autoplay policy may block optional audio feedback.
-  }
-}
-
-document.querySelector('#cpu-button')!.addEventListener('click', () => {
-  const difficulty = (document.querySelector('#difficulty-select') as HTMLSelectElement).value as Difficulty;
-  connect();
-  send({ type: 'create', mode: 'cpu', difficulty });
-});
-document.querySelector('#create-button')!.addEventListener('click', () => {
-  connect();
-  send({ type: 'create', mode: 'pvp' });
-});
-document.querySelector('#join-button')!.addEventListener('click', () => {
-  const roomCode = (document.querySelector('#room-input') as HTMLInputElement).value.trim().toUpperCase();
-  connect();
-  send({ type: 'join', roomCode });
-});
-
-window.addEventListener('keydown', (event) => {
-  keys.add(event.key.toLowerCase());
-  if (event.code === 'Space') event.preventDefault();
-});
-window.addEventListener('keyup', (event) => keys.delete(event.key.toLowerCase()));
-canvas.addEventListener('pointermove', (event) => {
-  const bounds = canvas.getBoundingClientRect();
-  pointer.x = (event.clientX - bounds.left) * canvas.width / bounds.width;
-  pointer.y = (event.clientY - bounds.top) * canvas.height / bounds.height;
-});
-canvas.addEventListener('pointerdown', () => { pointer.down = true; });
-window.addEventListener('pointerup', () => { pointer.down = false; });
-
-function commandLoop(now: number): void {
-  if (sessionState && playerId && sessionState.phase === 'combat' && sessionState.activePlayer === playerId && now - lastCommandAt > 45) {
-    const combat = sessionState.combat[playerId];
-    if (combat) {
-      send({
-        type: 'combat',
-        command: {
-          moveX: Number(keys.has('d')) - Number(keys.has('a')),
-          moveY: Number(keys.has('s')) - Number(keys.has('w')),
-          aim: { x: pointer.x - combat.playerPosition.x, y: pointer.y - combat.playerPosition.y },
-          attack: pointer.down,
-          dash: keys.has(' '),
-          interact: keys.has('e')
-        }
-      });
-      lastCommandAt = now;
-    }
-  }
-  requestAnimationFrame(commandLoop);
-}
-
-connect();
-requestAnimationFrame(commandLoop);
+// Deterministic visual fixtures only exist in development builds, never on Pages.
+const preview=import.meta.env.DEV?new URLSearchParams(location.search).get('preview'):null;
+if(preview) { void import('./preview').then(({startPreview})=> { hud.connection(true,'개발 미리보기');previewSend=startPreview(preview,handle); }); }
+else connect();
+requestAnimationFrame(frame);

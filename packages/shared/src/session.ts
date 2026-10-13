@@ -23,6 +23,7 @@ import type {
 import type { ClientMessage } from './protocol.js';
 import type { CombatCommand } from './protocol-types.js';
 import { deriveSeed, SeededRng } from './rng.js';
+import { PRESENTATION_EVENT_LIMIT, type PresentationEvent, type PresentationFact } from './presentation.js';
 
 interface RuntimeProjectile {
   id: string;
@@ -136,6 +137,9 @@ export class SessionEngine {
   private readonly shopStates = new Map<number, ShopState>();
   private activeRuntime: CombatRuntime | null = null;
   private shopPurchaseThisTurn = false;
+  private eventSequence = 0;
+  private readonly presentationEvents: PresentationEvent[] = [];
+  private readonly tickHits = new Map<string, PresentationEvent>();
 
   constructor(options: SessionOptions) {
     const seed = options.seed ?? `${options.sessionId}:${deriveSeed(options.roomCode, options.sessionId)}`;
@@ -173,6 +177,7 @@ export class SessionEngine {
       this.state.phase = 'roll';
       this.state.turnNumber = 1;
       this.state.activePlayer = 'p1';
+      this.emit('p1', { kind: 'turn' });
     }
     if (!wasReady) this.touch();
     return { ok: true };
@@ -192,15 +197,18 @@ export class SessionEngine {
     if (!this.isActive(playerId) || this.state.phase !== 'roll') return { ok: false, error: 'It is not your roll.' };
     const roll = (deriveSeed(this.state.seed, 'roll', this.state.turnNumber, playerId) % 6) + 1;
     const player = this.state.players[playerId];
+    const fromFloor = player.floor;
     this.state.lastRoll = roll;
     player.floor = Math.min(100, player.floor + roll);
     this.enterFloor(playerId, player.floor);
+    this.emit(playerId, { kind: 'roll', roll, fromFloor, toFloor: player.floor, floorType: this.state.floor!.type });
     this.touch();
     return { ok: true };
   }
 
   tick(deltaMs: number): void {
     if (this.state.phase !== 'combat' || !this.activeRuntime) return;
+    this.tickHits.clear();
     const playerId = this.state.activePlayer;
     const player = this.state.players[playerId];
     const runtime = this.activeRuntime;
@@ -217,6 +225,7 @@ export class SessionEngine {
     this.applyGhost(runtime, playerId, deltaMs);
     if (runtime.timeRemainingMs === 0 && !runtime.ghost?.active) {
       runtime.ghost = { position: { x: runtime.blueprint.width / 2, y: 40 }, active: true };
+      this.emit(playerId, { kind: 'ghost', position: runtime.ghost.position });
     }
     if (runtime.complete) {
       this.completeCombat(playerId);
@@ -232,6 +241,7 @@ export class SessionEngine {
       p2: this.runtimes.p2 ? this.toSnapshot(this.runtimes.p2) : null
     };
     snapshot.sharedShop = this.currentShopState();
+    snapshot.presentationEvents = clone(this.presentationEvents);
     return snapshot;
   }
 
@@ -299,6 +309,7 @@ export class SessionEngine {
     const direction = normalize(command.moveX, command.moveY);
     const previous = runtime.playerPosition;
     const distanceMoved = PLAYER_SPEED * (deltaMs / 1000);
+    const dashed = Boolean(command.dash && runtime.dashCooldownMs === 0);
     let next = clampPosition({ x: previous.x + direction.x * distanceMoved, y: previous.y + direction.y * distanceMoved }, runtime.blueprint);
     if (command.dash && runtime.dashCooldownMs === 0) {
       const aim = normalize(command.aim.x, command.aim.y);
@@ -310,16 +321,18 @@ export class SessionEngine {
     }
     const obstacle = runtime.blueprint.obstacles.find((candidate) => insideRect(next, candidate));
     if (obstacle) {
+      if (dashed) this.emit(playerId, { kind: 'dash', from: previous, position: previous, direction: command.aim });
       const key = `obstacle:${obstacle.x}:${obstacle.y}`;
       const now = Date.now();
       const lastHit = runtime.lastDamageAt.get(key) ?? 0;
       if (now - lastHit > 1000) {
         runtime.lastDamageAt.set(key, now);
-        this.damagePlayer(playerId, 1);
+        this.damagePlayer(playerId, 1, 'obstacle');
       }
       return;
     }
     runtime.playerPosition = next;
+    if (dashed) this.emit(playerId, { kind: 'dash', from: previous, position: next, direction: command.aim });
     if (distance(previous, next) > 0 && this.hasBuff(this.state.players[playerId], 'thorn-trail')) {
       runtime.hazards.push({ id: `thorn-${Date.now()}`, position: previous, radius: 20, damage: 12, owner: playerId, ttlMs: 3500 });
     }
@@ -349,6 +362,7 @@ export class SessionEngine {
       });
     }
     runtime.attackCooldownMs = definition?.rarity === 'legendary' ? 700 : 380;
+    this.emit(playerId, { kind: 'attack', position: runtime.playerPosition, direction: aim, itemId: player.weapon?.itemId });
   }
 
   private applyMonsterMovement(runtime: CombatRuntime, player: PlayerState, playerId: PlayerId, deltaMs: number): void {
@@ -364,7 +378,7 @@ export class SessionEngine {
         const lastHit = runtime.lastDamageAt.get(monster.id) ?? 0;
         if (now - lastHit > 850) {
           runtime.lastDamageAt.set(monster.id, now);
-          this.damagePlayer(playerId, 1);
+          this.damagePlayer(playerId, 1, 'monster');
           if (player.hearts <= 0) return;
         }
       }
@@ -374,7 +388,7 @@ export class SessionEngine {
         const lastHit = runtime.lastDamageAt.get(`obstacle:${obstacle.x}:${obstacle.y}`) ?? 0;
         if (now - lastHit > 1000) {
           runtime.lastDamageAt.set(`obstacle:${obstacle.x}:${obstacle.y}`, now);
-          this.damagePlayer(playerId, 1);
+          this.damagePlayer(playerId, 1, 'obstacle');
         }
       }
     }
@@ -391,10 +405,12 @@ export class SessionEngine {
       const monster = runtime.monsters.find((candidate) => candidate.alive && distance(candidate.position, projectile.position) < 24);
       if (monster) {
         monster.hp -= projectile.damage;
+        this.emitHit(playerId, monster, projectile.damage);
         if (monster.hp <= 0) {
           monster.alive = false;
           player.coins += monster.coinReward;
           if (this.hasBuff(player, 'coin-magnet')) player.coins += 2;
+          this.emit(playerId, { kind: 'enemy-defeated', targetId: monster.id, position: monster.position, coins: monster.coinReward + (this.hasBuff(player, 'coin-magnet') ? 2 : 0) });
         }
         continue;
       }
@@ -405,8 +421,7 @@ export class SessionEngine {
     runtime.projectiles = survivors;
     if (runtime.monsters.every((monster) => !monster.required || !monster.alive)) runtime.complete = true;
     if (runtime.blueprint.type === 'final-boss' && runtime.monsters.some((monster) => monster.type === 'final-boss' && !monster.alive)) {
-      this.state.winner = playerId;
-      this.state.phase = 'victory';
+      this.declareVictory(playerId);
     }
   }
 
@@ -416,14 +431,16 @@ export class SessionEngine {
       hazard.ttlMs -= deltaMs;
       if (distance(hazard.position, runtime.playerPosition) < hazard.radius && now - (runtime.lastDamageAt.get(hazard.id) ?? 0) > 900) {
         runtime.lastDamageAt.set(hazard.id, now);
-        this.damagePlayer(playerId, 1);
+        this.damagePlayer(playerId, 1, 'trail');
       }
       for (const monster of runtime.monsters) {
         if (monster.alive && distance(hazard.position, monster.position) < hazard.radius) {
           monster.hp -= hazard.damage * deltaMs / 1000;
+          this.emitHit(playerId, monster, hazard.damage * deltaMs / 1000);
           if (monster.hp <= 0) {
             monster.alive = false;
             player.coins += monster.coinReward;
+            this.emit(playerId, { kind: 'enemy-defeated', targetId: monster.id, position: monster.position, coins: monster.coinReward });
           }
         }
       }
@@ -437,6 +454,7 @@ export class SessionEngine {
     if (!chest) return;
     chest.opened = true;
     player.coins += chest.reward.coins;
+    this.emit(player.id, { kind: 'chest', targetId: chest.id, position: chest.position, coins: chest.reward.coins });
     if (chest.reward.itemId) this.grantItem(player, chest.reward.itemId);
   }
 
@@ -447,19 +465,21 @@ export class SessionEngine {
       x: runtime.ghost.position.x + direction.x * 48 * deltaMs / 1000,
       y: runtime.ghost.position.y + direction.y * 48 * deltaMs / 1000
     };
-    if (distance(runtime.ghost.position, runtime.playerPosition) < 24) this.die(playerId);
+    if (distance(runtime.ghost.position, runtime.playerPosition) < 24) this.die(playerId, 'ghost');
   }
 
-  private damagePlayer(playerId: PlayerId, amount: number): void {
+  private damagePlayer(playerId: PlayerId, amount: number, cause = 'monster'): void {
     if (this.state.phase !== 'combat') return;
     const player = this.state.players[playerId];
     player.hearts = Math.max(0, player.hearts - amount);
-    if (player.hearts === 0) this.die(playerId);
+    this.emit(playerId, { kind: 'player-hit', amount, cause, position: this.runtimes[playerId]?.playerPosition });
+    if (player.hearts === 0) this.die(playerId, cause);
   }
 
-  private die(playerId: PlayerId): void {
+  private die(playerId: PlayerId, cause = 'damage'): void {
     if (!this.isActive(playerId)) return;
     const player = this.state.players[playerId];
+    this.emit(playerId, { kind: 'death', fromFloor: player.floor, toFloor: Math.max(1, player.floor - 3), position: this.runtimes[playerId]?.playerPosition, cause });
     player.floor = Math.max(1, player.floor - 3);
     player.hearts = MAX_HEARTS;
     this.runtimes[playerId] = null;
@@ -470,13 +490,16 @@ export class SessionEngine {
   private completeCombat(playerId: PlayerId): void {
     if (!this.isActive(playerId) || this.state.phase !== 'combat') return;
     const player = this.state.players[playerId];
+    this.emit(playerId, { kind: 'clear', position: this.runtimes[playerId]?.playerPosition });
     if (player.weapon?.remainingCombatFloors !== undefined) {
       player.weapon.remainingCombatFloors -= 1;
-      if (player.weapon.remainingCombatFloors <= 0) player.weapon = null;
+      if (player.weapon.remainingCombatFloors <= 0) {
+        this.emit(playerId, { kind: 'weapon-expired', itemId: player.weapon.itemId });
+        player.weapon = null;
+      }
     }
     if (this.state.floor?.type === 'final-boss') {
-      this.state.winner = playerId;
-      this.state.phase = 'victory';
+      this.declareVictory(playerId);
       return;
     }
     this.finishTurn();
@@ -491,6 +514,7 @@ export class SessionEngine {
     this.state.phase = 'roll';
     this.state.activePlayer = this.state.activePlayer === 'p1' ? 'p2' : 'p1';
     this.state.turnNumber += 1;
+    this.emit(this.state.activePlayer, { kind: 'turn' });
     this.shopPurchaseThisTurn = false;
     this.touch();
   }
@@ -503,6 +527,7 @@ export class SessionEngine {
       if (shop.restockAfterTurns <= 0) {
         shop.offers = generateShopOffers(this.state.seed, floor, this.state.turnNumber);
         shop.restockAfterTurns = null;
+        this.emit(this.state.activePlayer, { kind: 'restock', floor });
         this.state.sharedShop = clone(shop);
       }
     }
@@ -522,6 +547,7 @@ export class SessionEngine {
     if (shop.restockAfterTurns === null) shop.restockAfterTurns = 3;
     this.shopPurchaseThisTurn = true;
     this.grantItem(player, offer.itemId);
+    this.emit(playerId, { kind: 'purchase', itemId: offer.itemId, coins: -offer.price, targetId: offer.slotId });
     this.state.sharedShop = clone(shop);
     this.touch();
     return { ok: true };
@@ -541,12 +567,14 @@ export class SessionEngine {
     if (player.potions <= 0 || player.hearts >= MAX_HEARTS) return { ok: false, error: 'Potion cannot be used.' };
     player.potions -= 1;
     player.hearts = Math.min(MAX_HEARTS, player.hearts + 1);
+    this.emit(playerId, { kind: 'heal', amount: 1, position: this.runtimes[playerId]?.playerPosition });
     this.touch();
     return { ok: true };
   }
 
   private grantItem(player: PlayerState, itemId: string): void {
     const definition = item(itemId);
+    this.emit(player.id, { kind: 'item', itemId, position: this.runtimes[player.id]?.playerPosition });
     if (definition.kind === 'consumable') {
       player.potions += 1;
     } else if (definition.kind === 'weapon') {
@@ -564,6 +592,34 @@ export class SessionEngine {
 
   private touch(): void {
     this.state.revision += 1;
+  }
+
+  private emit(playerId: PlayerId, fact: PresentationFact): PresentationEvent {
+    const event: PresentationEvent = clone({
+      ...fact,
+      id: ++this.eventSequence,
+      sessionId: this.state.sessionId,
+      playerId,
+      turnNumber: this.state.turnNumber,
+      floor: fact.floor ?? this.state.players[playerId].floor
+    });
+    this.presentationEvents.push(event);
+    if (this.presentationEvents.length > PRESENTATION_EVENT_LIMIT) this.presentationEvents.shift();
+    return event;
+  }
+
+  private emitHit(playerId: PlayerId, monster: MonsterSnapshot, amount: number): void {
+    const key = `${playerId}:${this.state.turnNumber}:${monster.id}`;
+    const pending = this.tickHits.get(key);
+    if (pending) pending.amount = (pending.amount ?? 0) + amount;
+    else this.tickHits.set(key, this.emit(playerId, { kind: 'enemy-hit', targetId: monster.id, position: monster.position, amount }));
+  }
+
+  private declareVictory(playerId: PlayerId): void {
+    if (this.state.winner === playerId) return;
+    this.emit(playerId, { kind: 'victory', position: this.runtimes[playerId]?.playerPosition });
+    this.state.winner = playerId;
+    this.state.phase = 'victory';
   }
 
   private toSnapshot(runtime: CombatRuntime): CombatSnapshot {

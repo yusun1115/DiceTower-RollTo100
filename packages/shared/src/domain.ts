@@ -1,3 +1,5 @@
+import type { PresentationEvent } from './presentation.js';
+
 export type PlayerId = 'p1' | 'p2';
 export type MatchMode = 'pvp' | 'cpu';
 export type Difficulty = 'easy' | 'normal' | 'hard';
@@ -136,6 +138,7 @@ export interface SessionState {
   combat: Record<PlayerId, CombatSnapshot | null>;
   sharedShop: ShopState;
   winner: PlayerId | null;
+  presentationEvents?: PresentationEvent[];
 }
 
 export interface ShopState {
