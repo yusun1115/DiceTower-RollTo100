@@ -94,7 +94,7 @@ describe('cosmetic authority facts', () => {
   it('records an accepted blocked dash without bypassing obstacle damage throttling',()=> {
     const session=engine();enter(session,normalFloor(session));const r=runtime(session);
     r.monsters.forEach(m=>{m.position={x:800,y:400};});
-    r.blueprint.obstacles=[{x:170,y:250,width:20,height:40}];r.lastDamageAt.set('obstacle:170:250',Date.now());
+    r.blueprint.obstacles=[{x:170,y:250,width:20,height:40}];r.lastDamageAt.set('obstacle:170:250',0);
     session.handle('p1',{type:'combat',command:{moveX:0,moveY:0,aim:{x:1,y:0},dash:true}});
     session.tick(1);session.tick(1);
     const dashes=facts(session).filter(e=>e.kind==='dash');
@@ -110,6 +110,12 @@ describe('cosmetic authority facts', () => {
     expect(session.handle('p1', { type: 'buy', slotId: offer.slotId }).ok).toBe(false);
     expect(facts(session).at(-1)!.id).toBe(before);
     session.state.players.p1.coins = 200;
+    for(let i=0;i<100;i++) {
+      const shop=session.getSnapshot().shop!;const target=shop.pedestals.find(p=>p.slotId===offer.slotId)!.position;
+      const dx=target.x-shop.playerPosition.x,dy=target.y-shop.playerPosition.y,length=Math.hypot(dx,dy);
+      if(length<=68)break;
+      session.handle('p1',{type:'combat',command:{moveX:dx/length,moveY:dy/length,aim:{x:1,y:0}}});session.tick(50);
+    }
     expect(session.handle('p1', { type: 'buy', slotId: offer.slotId }).ok).toBe(true);
     expect(facts(session).slice(-2).map(e => e.kind)).toEqual(['item', 'purchase']);
     expect(facts(session).at(-1)?.coins).toBe(-offer.price);

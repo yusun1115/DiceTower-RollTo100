@@ -69,6 +69,16 @@ function clearRuntime(engine: SessionEngine): void {
   engine.tick(1);
 }
 
+function walkToOffer(engine: SessionEngine, playerId: PlayerId, slotId: string): void {
+  for(let i=0;i<100;i++) {
+    const shop=engine.getSnapshot().shop!;const target=shop.pedestals.find(p=>p.slotId===slotId)!.position;
+    const dx=target.x-shop.playerPosition.x,dy=target.y-shop.playerPosition.y,length=Math.hypot(dx,dy);
+    if(length<=68){engine.handle(playerId,{type:'combat',command:{moveX:0,moveY:0,aim:{x:1,y:0}}});return;}
+    engine.handle(playerId,{type:'combat',command:{moveX:dx/length,moveY:dy/length,aim:{x:1,y:0}}});engine.tick(50);
+  }
+  throw new Error('Could not approach shop offer');
+}
+
 function findShopFixture(): { seed: string; floor: number } {
   for (let seedIndex = 0; seedIndex < 100; seedIndex += 1) {
     const seed = `shop-fixture-${seedIndex}`;
@@ -144,6 +154,8 @@ describe('authoritative session state', () => {
     engine.tick(1);
     expect(engine.state.players.p1.hearts).toBe(2);
     const floorBeforeDeath = engine.state.players.p1.floor;
+    for(const monster of runtime.monsters)(monster as unknown as {position:{x:number;y:number}}).position={x:900,y:500};
+    engine.tick(900); // Test lethal damage after the new hit-protection window.
     internal(engine).damagePlayer('p1', 2);
     expect(engine.state.players.p1.hearts).toBe(3);
     expect(engine.state.players.p1.floor).toBe(Math.max(1, floorBeforeDeath - 3));
@@ -291,7 +303,9 @@ describe('shops, items, and combat economy', () => {
     expect(initial.offers.length).toBeGreaterThanOrEqual(2);
     const first = initial.offers[0];
     const second = initial.offers[1];
+    walkToOffer(engine,'p1',first.slotId);
     expect(engine.handle('p1', { type: 'buy', slotId: first.slotId }).ok).toBe(true);
+    walkToOffer(engine,'p1',second.slotId);
     expect(engine.handle('p1', { type: 'buy', slotId: second.slotId }).ok).toBe(true);
     expect(engine.handle('p1', { type: 'buy', slotId: first.slotId }).ok).toBe(false);
     expect(engine.getSnapshot().sharedShop.offers.map((offer) => offer.slotId)).not.toContain(first.slotId);
@@ -363,7 +377,7 @@ describe('shops, items, and combat economy', () => {
     expect(runtime.hazards.length).toBeGreaterThan(0);
     expect(runtime.projectiles.length).toBe(2);
     expect(runtime.playerPosition.x).toBeGreaterThan(80);
-    expect(player.hearts).toBe(2);
+    expect(player.hearts).toBe(3); // Fresh owner trails are not immediately armed.
     internal(engine).die('p1');
     expect(player.buffs.map((buff) => buff.itemId)).toEqual(['ranged-edge', 'thorn-trail']);
   });

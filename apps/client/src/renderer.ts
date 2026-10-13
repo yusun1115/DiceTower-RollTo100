@@ -1,5 +1,6 @@
 import type { CombatSnapshot, PlayerId, PresentationEvent, SessionState, Vec2 } from '@tower/shared';
-import { Assets, type AssetName } from './assets';
+import { ITEM_DEFINITIONS, nearestShopPedestal, SHOP_INTERACT_RADIUS } from '@tower/shared';
+import { Assets, ITEM_FRAMES, ITEM_SYMBOLS, type AssetName } from './assets';
 import { Effects } from './presentation/effects';
 import { SceneView } from './presentation/scene';
 
@@ -60,7 +61,8 @@ export class Renderer {
     if(room)ctx.drawImage(room,0,0,960,540);
     else {ctx.strokeStyle='#26373a';ctx.lineWidth=1;for(let x=24;x<960;x+=48){ctx.beginPath();ctx.moveTo(x,24);ctx.lineTo(x,516);ctx.stroke();}for(let y=24;y<540;y+=48){ctx.beginPath();ctx.moveTo(24,y);ctx.lineTo(936,y);ctx.stroke();}}
     ctx.fillStyle=state?.phase==='shop'?'rgba(23,16,9,.16)':'rgba(7,14,17,.12)';ctx.fillRect(0,0,960,540);
-    if (!state || !combat || !state.floor || state.phase==='lobby' || (state.phase==='roll'&&!retained)) {
+    if(state?.phase==='shop' && state.shop) this.drawShop(state,now,reduced,local,aim);
+    else if (!state || !combat || !state.floor || state.phase==='lobby' || (state.phase==='roll'&&!retained)) {
       ctx.fillStyle='rgba(5,12,15,.42)';ctx.fillRect(0,0,960,540);
       const pos={x:480,y:335};this.shadow(pos,25);
       if(!this.sprite('hero',reduced?0:Math.floor(now/240)%4,pos,96)){ctx.fillStyle='#76d3c1';ctx.beginPath();ctx.arc(pos.x,pos.y,18,0,Math.PI*2);ctx.fill();}
@@ -123,6 +125,7 @@ export class Renderer {
       if(playerReaction?.kind==='hit'&&age<150)frame=8+Math.min(2,Math.floor(age/50));
       if(playerReaction?.kind==='death')frame=12+Math.min(3,Math.floor(age/65));
       this.shadow(playerPos,18);ctx.strokeStyle=state.activePlayer==='p1'?'#84d5c8':'#f0b471';ctx.lineWidth=1.5;ctx.beginPath();ctx.ellipse(playerPos.x,playerPos.y+7,16,7,0,0,Math.PI*2);ctx.stroke();
+      if((combat.protectionMs??0)>0){ctx.strokeStyle='#f5e1a7';ctx.lineWidth=2;ctx.beginPath();ctx.ellipse(playerPos.x,playerPos.y+7,22,10,0,0,Math.PI*2);ctx.stroke();ctx.font='bold 11px system-ui';ctx.fillStyle='#f5e1a7';ctx.textAlign='center';ctx.fillText('피격 보호',playerPos.x,playerPos.y-72);}
       if(!this.sprite('hero',frame,playerPos,74,localAim.x<0,playerReaction?.kind==='hit'&&age<120?1-age/120:0)){ctx.fillStyle=state.activePlayer==='p1'?'#76d3c1':'#efa360';ctx.beginPath();ctx.arc(playerPos.x,playerPos.y,14,0,Math.PI*2);ctx.fill();}
       ctx.font='bold 11px system-ui';ctx.textAlign='center';ctx.fillStyle=state.activePlayer==='p1'?'#a6ede0':'#ffd1a4';ctx.fillText(`${actor.name} · ${'♥'.repeat(actor.hearts)}`,playerPos.x,playerPos.y+26);
       if(combat.ghost?.active) {
@@ -137,14 +140,46 @@ export class Renderer {
     ctx.restore();
   }
 
+  private drawShop(state: SessionState, now: number, reduced: boolean, local: PlayerId | null, aim: Vec2): void {
+    const ctx=this.ctx;const shop=state.shop!;const nearest=nearestShopPedestal(shop);const image=this.assets.get('items');
+    ctx.strokeStyle='#9d8550';ctx.lineWidth=2;ctx.strokeRect(24,24,912,492);
+    for(const pedestal of shop.pedestals) {
+      const offer=state.sharedShop.offers.find(o=>o.slotId===pedestal.slotId);const pos=pedestal.position;
+      const definition=ITEM_DEFINITIONS.find(i=>i.id===offer?.itemId);const color=definition?.rarity==='legendary'?'#f0cc76':definition?.rarity==='rare'?'#85d2cf':'#d5c49a';
+      this.shadow(pos,36);ctx.save();
+      if(nearest?.slotId===pedestal.slotId){ctx.strokeStyle=local===state.activePlayer?'#f6db8e':'#adbfab';ctx.lineWidth=2;ctx.setLineDash([4,4]);ctx.beginPath();ctx.ellipse(pos.x,pos.y+4,SHOP_INTERACT_RADIUS,SHOP_INTERACT_RADIUS*.4,0,0,Math.PI*2);ctx.stroke();ctx.setLineDash([]);}
+      ctx.fillStyle=offer?'#39443c':'#28332e';ctx.strokeStyle=offer?color:'#626e5c';ctx.lineWidth=2;ctx.beginPath();ctx.roundRect(pos.x-34,pos.y-8,68,24,5);ctx.fill();ctx.stroke();
+      ctx.font='bold 13px system-ui';ctx.textAlign='center';ctx.fillStyle=offer?'#f3e1b4':'#9eaa98';
+      ctx.fillText(definition?.name??'판매 완료',pos.x,pos.y-79);
+      if(offer) {
+        const frame=ITEM_FRAMES[offer.itemId];
+        if(image&&frame!==undefined)ctx.drawImage(image,frame*96,0,96,96,pos.x-32,pos.y-72,64,64);
+        else{ctx.font='28px system-ui';ctx.fillStyle=color;ctx.fillText(ITEM_SYMBOLS[offer.itemId]??'◇',pos.x,pos.y-28);}
+        ctx.font='bold 15px Georgia';ctx.fillStyle=color;ctx.fillText(`${offer.price} ●`,pos.x,pos.y+39);
+        if(nearest?.slotId===pedestal.slotId && local===state.activePlayer){ctx.font='bold 12px system-ui';ctx.fillStyle='#fff0b7';ctx.fillText(state.players[state.activePlayer].coins>=offer.price?'E · 구매':'코인이 부족합니다',pos.x,pos.y+60);}
+      } else {ctx.font='20px system-ui';ctx.fillStyle='#9eaa98';ctx.fillText('—',pos.x,pos.y-33);}
+      ctx.restore();
+    }
+    const old=this.view.previousShop;const pos=this.view.position(shop.playerPosition,old?.playerPosition,now);
+    const moving=old&&Math.hypot(shop.playerPosition.x-old.playerPosition.x,shop.playerPosition.y-old.playerPosition.y)>.1;
+    this.shadow(pos,21);ctx.strokeStyle=state.activePlayer==='p1'?'#84d5c8':'#f0b471';ctx.beginPath();ctx.ellipse(pos.x,pos.y+7,17,7,0,0,Math.PI*2);ctx.stroke();
+    if(!this.sprite('hero',!reduced&&moving?Math.floor(now/145)%4:0,pos,82,aim.x<0)){ctx.fillStyle='#76d3c1';ctx.beginPath();ctx.arc(pos.x,pos.y,16,0,Math.PI*2);ctx.fill();}
+    ctx.font='bold 12px system-ui';ctx.textAlign='center';ctx.fillStyle='#d7e7d0';ctx.fillText(state.players[state.activePlayer].name,pos.x,pos.y+29);
+    const exit=shop.exitPosition;ctx.fillStyle='#142a26';ctx.strokeStyle='#83b5a5';ctx.beginPath();ctx.roundRect(exit.x-29,exit.y-38,58,58,6);ctx.fill();ctx.stroke();
+    ctx.fillStyle='#b9dcc5';ctx.font='26px Georgia';ctx.fillText('⇥',exit.x,exit.y-5);ctx.font='bold 11px system-ui';ctx.fillText('E · 나가기',exit.x,exit.y+38);
+    this.effects.draw(ctx,now,reduced);
+  }
+
   private drawHazards(combat: CombatSnapshot, now: number, reduced: boolean): void {
     const ctx=this.ctx;
     for(const hazard of combat.hazards) {
+      ctx.save();if((hazard.armingMs??0)>0)ctx.globalAlpha=.4;
       const fire=hazard.id.startsWith('fire-');ctx.fillStyle=fire?'rgba(189,87,36,.32)':'rgba(139,41,55,.22)';ctx.strokeStyle=fire?'#e69f55':'#c9586d';ctx.lineWidth=1;
       ctx.beginPath();ctx.arc(hazard.position.x,hazard.position.y,hazard.radius,0,Math.PI*2);ctx.fill();ctx.stroke();
       ctx.fillStyle=fire?'#e9b56d':'#91c5a7';
       const phase=reduced?0:Math.floor(now/180)%2;
       for(let i=0;i<4;i++){const a=i*Math.PI/2;const x=hazard.position.x+Math.cos(a)*hazard.radius*.45,y=hazard.position.y+Math.sin(a)*hazard.radius*.45;ctx.beginPath();ctx.moveTo(x-3,y+4);ctx.lineTo(x,y-6-phase*2);ctx.lineTo(x+3,y+4);ctx.fill();}
+      ctx.restore();
     }
   }
 

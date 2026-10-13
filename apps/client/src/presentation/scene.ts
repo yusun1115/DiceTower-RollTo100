@@ -1,4 +1,4 @@
-import type { CombatSnapshot, SessionState, Vec2 } from '@tower/shared';
+import type { CombatSnapshot, SessionState, ShopSnapshot, Vec2 } from '@tower/shared';
 
 export function sceneKey(state: SessionState): string {
   return `${state.sessionId}:${state.turnNumber}:${state.activePlayer}:${state.floor?.floor ?? '-'}:${state.phase}`;
@@ -18,11 +18,13 @@ export function canvasPoint(point: Vec2, rect: { left: number; top: number; widt
 export class SceneView {
   state: SessionState | null = null;
   previous: CombatSnapshot | null = null;
+  previousShop: ShopSnapshot | null = null;
   receivedAt = 0;
 
   accept(state: SessionState, now: number): boolean {
     const changed = !this.state || sceneKey(this.state) !== sceneKey(state);
     this.previous = changed ? null : this.state!.combat[this.state!.activePlayer];
+    this.previousShop = changed ? null : this.state!.shop ?? null;
     this.state = state;
     this.receivedAt = now;
     return changed;

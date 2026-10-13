@@ -115,7 +115,8 @@ export interface CombatSnapshot {
   monsters: MonsterSnapshot[];
   chests: ChestSnapshot[];
   projectiles: Array<{ id: string; position: Vec2; velocity: Vec2; owner: PlayerId }>;
-  hazards: Array<{ id: string; position: Vec2; radius: number; damage: number; owner: PlayerId }>;
+  hazards: Array<{ id: string; position: Vec2; radius: number; damage: number; owner: PlayerId; armingMs?: number }>;
+  protectionMs?: number;
   ghost: { position: Vec2; active: boolean } | null;
   timeRemainingMs: number;
   complete: boolean;
@@ -137,6 +138,7 @@ export interface SessionState {
   floor: FloorBlueprint | null;
   combat: Record<PlayerId, CombatSnapshot | null>;
   sharedShop: ShopState;
+  shop?: ShopSnapshot | null;
   winner: PlayerId | null;
   presentationEvents?: PresentationEvent[];
 }
@@ -145,4 +147,11 @@ export interface ShopState {
   floor: number | null;
   offers: ShopOffer[];
   restockAfterTurns: number | null;
+}
+
+export interface ShopSnapshot {
+  floor: number;
+  playerPosition: Vec2;
+  pedestals: Array<{ slotId: string; position: Vec2 }>;
+  exitPosition: Vec2;
 }

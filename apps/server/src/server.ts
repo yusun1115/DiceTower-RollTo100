@@ -15,7 +15,7 @@ export interface TowerServerHandle {
 export function createTowerServer(): TowerServerHandle {
   const httpServer = createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
-    response.end(JSON.stringify({ service: 'tower-race', status: 'ok', presentationVersion: PRESENTATION_VERSION, commit: process.env.RENDER_GIT_COMMIT ?? 'development' }));
+    response.end(JSON.stringify({ service: 'tower-race', status: 'ok', presentationVersion: PRESENTATION_VERSION, gameplayVersion: 2, commit: process.env.RENDER_GIT_COMMIT ?? 'development' }));
   });
   const host = new SessionHost();
   const webSocketServer = new WebSocketServer({ server: httpServer });

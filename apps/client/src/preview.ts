@@ -19,9 +19,14 @@ export function startPreview(name: string, receive: (message: ServerMessage)=>vo
       engine.state.turnNumber=turn;engine.state.players.p1.floor=wanted===100?99:wanted-roll;break;
     }
     engine.state.players.p1.coins=120;engine.state.players.p1.potions=3;
-    if(name==='hazards'||name==='ghost')engine.state.players.p1.buffs=[{itemId:'thorn-trail',stacks:1},{itemId:'flame-dash',stacks:1}];
+    if(name==='hazards'||name==='ghost'||name==='safe-trail')engine.state.players.p1.buffs=[{itemId:'thorn-trail',stacks:1},{itemId:'flame-dash',stacks:1}];
     publish();engine.roll('p1');publish();
     const internal=engine as unknown as {runtimes:Record<string,Pick<CombatSnapshot,'monsters'|'playerPosition'|'chests'|'timeRemainingMs'>>;damagePlayer(player:string,amount:number):void};
+    if(name==='safe-trail') {
+      const runtime=internal.runtimes.p1 as typeof internal.runtimes.p1 & {blueprint:{obstacles:unknown[]}};
+      runtime.blueprint.obstacles=[];runtime.monsters.forEach(m=>{m.position={x:900,y:480};m.hp=99999;});
+      publish();
+    }
     if(name==='feedback') {
       const runtime=internal.runtimes.p1;
       runtime.monsters.forEach((monster,index)=>{monster.alive=index===0;monster.hp=index===0?6:0;});
@@ -38,7 +43,7 @@ export function startPreview(name: string, receive: (message: ServerMessage)=>vo
   }
   const timer=window.setInterval(()=> {
     // A frozen fixture stays readable for screenshot review. Gameplay fixtures remain interactive.
-    if(!['victory','death','shop'].includes(name))engine.tick(50);
+    if(!['victory','death'].includes(name))engine.tick(50);
     publish();
   },50);
   window.addEventListener('pagehide',()=>window.clearInterval(timer),{once:true});

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import { describe, expect, it } from 'vitest';
-import type { CombatSnapshot, PlayerId, ServerMessage, ShopOffer } from '@tower/shared';
+import { deriveSeed, isShopFloor, type CombatSnapshot, type PlayerId, type ServerMessage, type ShopOffer } from '@tower/shared';
 import { buildCpuCombatCommand, chooseCpuOffer, SessionHost } from './session-host.js';
 
 class FakeSocket extends EventEmitter {
@@ -35,6 +35,20 @@ function latestWelcome(socket: FakeSocket): Extract<ServerMessage, { type: 'welc
 }
 
 describe('authoritative WebSocket session host', () => {
+  it('walks CPU to an affordable world-shop display before buying and handing off',()=> {
+    const host=new SessionHost();const socket=new FakeSocket();host.attach(socket as never);
+    emit(socket,{type:'create',mode:'cpu',difficulty:'easy'});emit(socket,{type:'ready'});
+    const hosted=host.getSession(latestWelcome(socket).roomCode)!;const engine=hosted.engine;
+    const floor=Array.from({length:90},(_,i)=>i+7).find(f=>isShopFloor(engine.state.seed,f))!;
+    engine.state.phase='roll';engine.state.activePlayer='p2';engine.state.turnNumber=1;
+    engine.state.players.p2.floor=floor-(deriveSeed(engine.state.seed,'roll',1,'p2')%6+1);engine.state.players.p2.coins=100;engine.roll('p2');
+    const before=engine.getSnapshot();const chosen=chooseCpuOffer(before.sharedShop.offers,100,'easy')!;
+    const now=Date.now()+2000;host.tick(50,now);
+    expect(engine.state.players.p2.coins).toBe(100);expect(engine.getSnapshot().shop!.playerPosition).not.toEqual(before.shop!.playerPosition);
+    for(let i=1;i<100&&engine.getSnapshot().phase==='shop';i++)host.tick(50,now+i*200);
+    expect(engine.state.activePlayer).toBe('p1');expect(engine.state.players.p2.coins).toBe(100-chosen.price);expect(engine.getSnapshot().sharedShop.offers).toHaveLength(3);
+    expect(engine.getSnapshot().shop).toBeNull();
+  });
   it('changes CPU decisions by difficulty without changing legal command bounds', () => {
     const offers: ShopOffer[] = [
       { slotId: 'cheap', itemId: 'heart-potion', price: 5 },

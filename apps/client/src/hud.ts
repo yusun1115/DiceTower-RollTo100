@@ -1,4 +1,4 @@
-import { ITEM_DEFINITIONS, type ClientMessage, type PlayerId, type PresentationEvent, type SessionState } from '@tower/shared';
+import { ITEM_DEFINITIONS, nearestShopPedestal, type ClientMessage, type PlayerId, type PresentationEvent, type SessionState } from '@tower/shared';
 import { Assets, assetUrls, ITEM_FRAMES, ITEM_SYMBOLS } from './assets';
 import { diceResultLabel, Journey } from './presentation/journey';
 import { PresentationPreferences } from './presentation/preferences';
@@ -25,8 +25,7 @@ export class HUD {
   private menuPending = false;
   private heartReaction: { kind: string; until: number } | null = null;
   private resourceReaction: { label: string; until: number } | null = null;
-  private shopIdentity = '';
-  private shopButtons = new Map<string, HTMLButtonElement>();
+  private nearbyShopSlot: string | null = null;
   private art = new Assets();
   private refs: Record<string, HTMLElement> = {};
   private send: (message: ClientMessage) => void;
@@ -57,9 +56,11 @@ export class HUD {
             <div class="arena-frame"><div class="arena-caption"><div><span class="eyebrow">DUNGEON</span><strong id="arena-floor">입구</strong><small id="view-label"></small></div><span id="timer-label">—</span></div>
               <div id="announcement" class="announcement" aria-live="polite"><strong id="announcement-title">탑의 문이 열립니다</strong><span id="announcement-detail">준비를 마치면 첫 번째 주사위를 굴릴 수 있습니다.</span></div>
               <div class="canvas-wrap"><canvas id="game-canvas" width="960" height="540" aria-label="Tower Race 던전"></canvas>
+                <div id="shop-panel" class="world-shop-ui" hidden><div class="shop-world-guide"><strong>여행자의 공유 상점</strong><span id="shop-stock"></span><p id="shop-guidance">WASD 이동 · 상품 가까이에서 E 구매 · 출구에서 E 나가기</p></div>
+                  <div id="shop-context" class="shop-context" hidden aria-live="polite"><span id="shop-icon" class="item-icon"></span><div class="shop-context-copy"><strong id="shop-name"></strong><small id="shop-meta"></small><span id="shop-description"></span><p id="shop-affordance"></p></div><button id="shop-buy-button" class="primary">E · 구매</button></div></div>
                 <div id="result-overlay" class="result-overlay" hidden><p class="eyebrow">THE TOWER HAS A CHAMPION</p><h2 id="result-title"></h2><p id="result-detail"></p><button id="restart-button" class="primary">다시 도전</button></div></div>
               <div id="warning-banner" class="warning-banner" role="status" hidden></div>
-            </div><details class="help"><summary>조작법 & 기록</summary><p><kbd>WASD</kbd> 이동 · 마우스 조준/클릭 공격 · <kbd>Space</kbd> 대시 · <kbd>E</kbd> 상자</p><div id="event-log" class="event-log"></div></details>
+            </div><details class="help"><summary>조작법 & 기록</summary><p><kbd>WASD</kbd> 이동 · 마우스 조준/클릭 공격 · <kbd>Space</kbd> 대시 · <kbd>E</kbd> 상자/상점 구매/출구</p><div id="event-log" class="event-log"></div></details>
           </div>
           <aside class="sidebar">
             <section class="resources"><div class="resource-top"><span id="player-label">1P</span><strong id="floor-value">0층</strong></div><div class="resource-line"><span id="hearts-value" class="hearts" aria-label="하트 3개">♥♥♥</span><span class="coin"><i>●</i> <strong id="coins-value">0</strong></span></div>
@@ -71,7 +72,6 @@ export class HUD {
               <div id="marker-p1" class="tower-marker p1"><span>1P</span><strong id="marker-floor-p1">0</strong></div><div id="marker-p2" class="tower-marker p2"><span>2P</span><strong id="marker-floor-p2">0</strong></div></div></section>
             <section id="action-panel" class="action-panel"><p id="action-status"></p><button id="ready-button" class="primary">준비 완료</button><button id="potion-button" hidden>회복 물약 사용</button><button id="finish-button" hidden>쇼핑 끝내기</button></section>
           </aside>
-          <section id="shop-panel" class="shop-panel" hidden><div class="shop-heading"><div><p class="eyebrow">THE TRAVELER'S MARKET</p><h2>공유 상점</h2></div><span id="shop-stock"></span></div><div id="shop-offers" class="shop-offers"></div></section>
         </section><div id="toast" class="toast" role="status" hidden></div>
       </main>`;
     for (const element of root.querySelectorAll<HTMLElement>('[id]')) this.refs[element.id] = element;
@@ -89,6 +89,7 @@ export class HUD {
     this.refs['dice-button'].onclick = () => { if (this.state && this.player && this.journey.request(this.state, this.player, performance.now())) { this.act({ type: 'roll' }); this.update(this.state); } };
     this.refs['potion-button'].onclick = () => this.act({ type: 'use-potion' });
     this.refs['finish-button'].onclick = () => this.act({ type: 'finish-shop' });
+    this.refs['shop-buy-button'].onclick = () => {if(this.nearbyShopSlot)this.act({type:'buy',slotId:this.nearbyShopSlot});};
     this.refs['restart-button'].onclick = () => window.location.reload();
   }
 
@@ -126,7 +127,8 @@ export class HUD {
   react(event: PresentationEvent, now: number): void {
     if (event.playerId !== this.player) return;
     if (event.kind === 'player-hit' || event.kind === 'heal') this.heartReaction = { kind: event.kind, until: now+220 };
-    const label = event.kind === 'item' ? `${itemName(event.itemId)} 획득` : event.kind === 'weapon-expired' ? `${itemName(event.itemId)} 사용 종료` : event.kind === 'purchase' ? `${event.coins} ● · 구매 완료` : event.coins && event.coins>0 ? `+${event.coins} ● 획득` : '';
+    const hitCause=event.cause==='trail'?'가시/화염 장판':event.cause==='obstacle'?'장애물':event.cause==='monster'?'몬스터':'위험';
+    const label = event.kind==='player-hit'?`${hitCause} 피해 · -${event.amount??1} ♥`:event.kind === 'item' ? `${itemName(event.itemId)} 획득` : event.kind === 'weapon-expired' ? `${itemName(event.itemId)} 사용 종료` : event.kind === 'purchase' ? `${event.coins} ● · 구매 완료` : event.coins && event.coins>0 ? `+${event.coins} ● 획득` : '';
     if (label) this.resourceReaction = { label, until: now+1000 };
   }
 
@@ -149,7 +151,7 @@ export class HUD {
     const phases: Record<string, string> = { lobby: '준비 대기', roll: mine ? '당신의 턴' : `${actor.name}의 턴`, combat: mine ? '던전 전투' : `${actor.name} 관전`, shop: mine ? '상점 탐색' : `${actor.name} 쇼핑 중`, victory: state.winner === this.player ? '승리' : '패배' };
     text(this.refs['phase-label'], phases[state.phase] ?? '층 준비');
     text(this.refs['arena-floor'], state.floor ? `${state.floor.floor.toString().padStart(2,'0')}층` : '탑의 입구');
-    text(this.refs['view-label'], state.phase === 'combat' ? mine ? '직접 조작 중' : `${actor.name} 관전 · 내 자원은 오른쪽` : 'ROLL · FIGHT · CLIMB');
+    text(this.refs['view-label'], state.phase === 'combat'||state.phase==='shop' ? mine ? '직접 조작 중' : `${actor.name} 관전 · 내 자원은 오른쪽` : 'ROLL · FIGHT · CLIMB');
     text(this.refs['timer-label'], combat && state.phase === 'combat' ? `${Math.ceil(combat.timeRemainingMs/1000)}s` : '◇');
     text(this.refs['turn-value'], `TURN ${state.turnNumber}`);
     (this.refs['dice-button'] as HTMLButtonElement).disabled = !this.connected || !mine || state.phase !== 'roll' || Boolean(this.journey.pending);
@@ -160,7 +162,7 @@ export class HUD {
     show(potion, mine && (state.phase === 'combat' || state.phase === 'shop')); potion.disabled = !this.connected || player.potions <= 0 || player.hearts === 3; text(potion, `물약 사용 · ${player.potions}개`);
     const finish = this.refs['finish-button'] as HTMLButtonElement; show(finish, mine && state.phase === 'shop'); finish.disabled = !this.connected;
     text(this.refs['action-status'], state.winner ? '모험이 끝났습니다. 다시 도전해 보세요.' : lobby ? state.mode === 'cpu' ? '준비 완료를 누르면 모험이 시작됩니다.' : this.readySent ? '내 준비 완료 · 상대의 입장과 준비를 기다립니다.' : '방 코드를 공유하고 두 사람 모두 준비하세요.' : state.phase === 'combat' ? mine ? '적을 모두 쓰러뜨리세요.' : '상대가 돌파하는 던전을 지켜보세요.' : state.phase === 'shop' ? mine ? '원하는 상품을 여러 개 구매할 수 있습니다.' : '공유 재고가 바뀔 수 있습니다.' : mine ? '다음 층의 운명을 굴려보세요.' : `${actor.name}의 진행을 기다립니다.`);
-    const warning = state.phase === 'combat' && combat ? combat.ghost?.active ? '☠ 무적 유령 · 장애물을 통과합니다. 닿으면 즉사!' : actor.hearts <= 1 ? '♥ 마지막 하트 · 다음 피격은 사망' : combat.timeRemainingMs <= 10000 ? '시간 임박 · 곧 무적 유령이 나타납니다' : actor.buffs.some(b => b.itemId === 'thorn-trail' || b.itemId === 'flame-dash') ? '⚠ 내 장판도 나를 해칠 수 있습니다' : '' : '';
+    const warning = state.phase === 'combat' && combat ? combat.ghost?.active ? '☠ 무적 유령 · 장애물을 통과합니다. 닿으면 즉사!' : actor.hearts <= 1 ? '♥ 마지막 하트 · 다음 피격은 사망' : combat.timeRemainingMs <= 10000 ? '시간 임박 · 곧 무적 유령이 나타납니다' : actor.buffs.some(b => b.itemId === 'thorn-trail' || b.itemId === 'flame-dash') ? '⚠ 가시·화염 장판은 생성 0.4초 뒤 본인도 피해 · 되돌아갈 때 주의' : '' : '';
     text(this.refs['warning-banner'], warning && !mine ? `${actor.name} · ${warning}` : warning); show(this.refs['warning-banner'], Boolean(warning));
     for (const id of ['p1','p2'] as PlayerId[]) text(this.refs[`marker-floor-${id}`], `${state.players[id].floor}`);
     show(this.refs['result-overlay'], Boolean(state.winner));
@@ -178,27 +180,19 @@ export class HUD {
 
   private shop(state: SessionState, mine: boolean) {
     show(this.refs['shop-panel'], state.phase === 'shop'); if (state.phase !== 'shop') return;
-    const generation = (state.presentationEvents ?? []).filter(e=> e.kind === 'restock' && e.floor === state.sharedShop.floor).at(-1)?.id ?? 0;
-    const identity = `${state.sharedShop.floor}:${generation}`;
-    if (this.shopIdentity !== identity) { this.shopButtons.clear(); this.refs['shop-offers'].replaceChildren(); this.shopIdentity = identity; }
-    const offers = state.sharedShop.offers; const valid = new Set(offers.map(o=> `${o.slotId}:${o.itemId}`));
-    for (const [key, button] of this.shopButtons) if (!valid.has(key)) { button.remove(); this.shopButtons.delete(key); }
-    for (const offer of offers) {
-      const key = `${offer.slotId}:${offer.itemId}`; let button = this.shopButtons.get(key);
-      if (!button) {
-        button = document.createElement('button'); button.className = 'shop-item';
-        const item = itemById.get(offer.itemId); button.dataset.rarity = item?.rarity ?? 'common';
-        const icon = document.createElement('span'); icon.className = 'item-icon'; this.icon(icon, offer.itemId); button.append(icon);
-        const copy = document.createElement('span'); copy.className = 'shop-copy';
-        const name = document.createElement('strong'); name.textContent = itemName(offer.itemId);
-        const meta = document.createElement('small'); meta.textContent = `${rarity[item?.rarity ?? 'common']} · ${item?.kind === 'weapon' ? `${item.combatFloors}개 전투층` : item?.kind === 'passive' ? '경기 내내' : '소모품'}`;
-        const description = document.createElement('span'); description.textContent = descriptions[offer.itemId] ?? '';
-        copy.append(name, meta, description); const price = document.createElement('strong'); price.className = 'shop-price'; price.textContent = `${offer.price} ●`;
-        button.append(copy, price); button.onclick = () => this.act({ type: 'buy', slotId: offer.slotId });
-        this.refs['shop-offers'].append(button); this.shopButtons.set(key, button);
-      }
-      this.icon(button.querySelector<HTMLElement>('.item-icon')!, offer.itemId);
-      button.disabled = !this.connected || !mine || !this.player || state.players[this.player].coins < offer.price;
+    const offers=state.sharedShop.offers;const nearest=state.shop?nearestShopPedestal(state.shop):undefined;
+    const offer=offers.find(o=>o.slotId===nearest?.slotId);
+    this.nearbyShopSlot=mine&&offer?offer.slotId:null;
+    text(this.refs['shop-guidance'],!state.shop?'상점 서버 업데이트 중 · 새로고침 후 새 경기로 입장하세요.':mine?'WASD/클릭 이동 · 가까이에서 E 구매 · 출구에서 E 나가기':`${state.players[state.activePlayer].name} 쇼핑 관전 · 재고는 두 사람이 공유합니다`);
+    show(this.refs['shop-context'],Boolean(nearest));
+    if(nearest) {
+      const item=offer?itemById.get(offer.itemId):undefined;
+      text(this.refs['shop-name'],offer?itemName(offer.itemId):'판매 완료');
+      text(this.refs['shop-meta'],item?`${rarity[item.rarity]} · ${item.kind==='weapon'?`${item.combatFloors}개 전투층`:item.kind==='passive'?'경기 내내':'소모품'}`:'공유 재고에서 이미 판매된 상품입니다.');
+      text(this.refs['shop-description'],offer?descriptions[offer.itemId]??'':'다른 진열대를 확인하거나 재입고를 기다리세요.');
+      text(this.refs['shop-affordance'],offer?`${offer.price} ●${state.players[state.activePlayer].coins<offer.price?' · 코인이 부족합니다':''}`:'');
+      if(offer)this.icon(this.refs['shop-icon'],offer.itemId);show(this.refs['shop-icon'],Boolean(offer));
+      const button=this.refs['shop-buy-button'] as HTMLButtonElement;show(button,Boolean(offer)&&mine);button.disabled=!this.connected||!offer||state.players[state.activePlayer].coins<offer.price;
     }
     text(this.refs['shop-stock'], `재고 ${offers.length}개 · ${state.sharedShop.restockAfterTurns === null ? '한정 공유 재고' : `${state.sharedShop.restockAfterTurns}턴 뒤 재입고`}`);
   }
@@ -213,7 +207,7 @@ export class HUD {
     const active = announcement && announcement.until > now;
     const title = active ? announcement.title : state.winner ? state.winner === this.player ? 'VICTORY' : 'DEFEAT' : state.phase === 'combat' ? `${state.floor?.floor}층 던전` : state.phase === 'shop' ? '여행자의 공유 상점' : state.phase === 'lobby' ? '모험을 준비하세요' : state.activePlayer === this.player ? '당신의 다음 이동' : '상대의 다음 이동';
     text(this.refs['announcement-title'], title);
-    text(this.refs['announcement-detail'], active ? announcement.detail : state.phase === 'combat' ? '적을 모두 처치하면 다음 플레이어의 턴으로 넘어갑니다.' : state.phase === 'lobby' ? '준비 완료 후 주사위가 활성화됩니다.' : '100층에 먼저 도착하는 것만으로는 승리할 수 없습니다.');
+    text(this.refs['announcement-detail'], active ? announcement.detail : state.phase === 'combat' ? '적을 모두 처치하면 다음 플레이어의 턴으로 넘어갑니다.' : state.phase === 'shop' ? 'WASD로 이동해 상품 가까이에서 E키로 구매하세요.' : state.phase === 'lobby' ? '준비 완료 후 주사위가 활성화됩니다.' : '100층에 먼저 도착하는 것만으로는 승리할 수 없습니다.');
     this.refs['announcement'].dataset.tone = active ? announcement.tone : '';
     this.refs['announcement'].classList.toggle('cue-active', Boolean(active) && !reduced);
     const travel = this.journey.travel; const pending = this.journey.pending;

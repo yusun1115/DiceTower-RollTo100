@@ -3,6 +3,7 @@ import type { WebSocket } from 'ws';
 import {
   SessionEngine,
   parseClientMessage,
+  SHOP_INTERACT_RADIUS,
   type ClientMessage,
   type CombatCommand,
   type CombatSnapshot,
@@ -193,7 +194,16 @@ export class SessionHost {
     if (engine.state.phase === 'shop') {
       const state = engine.getSnapshot();
       const affordable = chooseCpuOffer(state.sharedShop.offers, state.players.p2.coins, difficulty);
-      if (affordable) engine.handle('p2', { type: 'buy', slotId: affordable.slotId });
+      const pedestal=state.shop?.pedestals.find(p=>p.slotId===affordable?.slotId);
+      if(affordable && pedestal && state.shop) {
+        const dx=pedestal.position.x-state.shop.playerPosition.x,dy=pedestal.position.y-state.shop.playerPosition.y;
+        const length=Math.hypot(dx,dy);
+        if(length>SHOP_INTERACT_RADIUS) {
+          engine.handle('p2',{type:'combat',command:{moveX:dx/length,moveY:dy/length,aim:{x:dx,y:dy},interact:false}});
+          hosted.cpuNextActionAt=now+130;return;
+        }
+        engine.handle('p2', { type: 'buy', slotId: affordable.slotId });
+      }
       engine.handle('p2', { type: 'finish-shop' });
       hosted.cpuNextActionAt = now + 600;
       return;

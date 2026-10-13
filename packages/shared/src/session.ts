@@ -18,12 +18,14 @@ import type {
   PlayerState,
   SessionState,
   ShopState,
+  ShopSnapshot,
   Vec2
 } from './domain.js';
 import type { ClientMessage } from './protocol.js';
 import type { CombatCommand } from './protocol-types.js';
 import { deriveSeed, SeededRng } from './rng.js';
 import { PRESENTATION_EVENT_LIMIT, type PresentationEvent, type PresentationFact } from './presentation.js';
+import { createWorldShop, nearestShopPedestal, SHOP_INTERACT_RADIUS, OWNER_TRAIL_ARM_MS, PLAYER_PROTECTION_MS } from './world.js';
 
 interface RuntimeProjectile {
   id: string;
@@ -41,6 +43,7 @@ interface RuntimeHazard {
   damage: number;
   owner: PlayerId;
   ttlMs: number;
+  ageMs: number;
 }
 
 interface CombatRuntime {
@@ -56,6 +59,9 @@ interface CombatRuntime {
   attackCooldownMs: number;
   dashCooldownMs: number;
   lastDamageAt: Map<string, number>;
+  elapsedMs: number;
+  protectionMs: number;
+  lastThornPosition: Vec2 | null;
 }
 
 export interface SessionOptions {
@@ -136,6 +142,9 @@ export class SessionEngine {
   private readonly runtimes: Record<PlayerId, CombatRuntime | null> = { p1: null, p2: null };
   private readonly shopStates = new Map<number, ShopState>();
   private activeRuntime: CombatRuntime | null = null;
+  private shopRuntime: ShopSnapshot | null = null;
+  private shopInteractionHeld = false;
+  private hazardSequence = 0;
   private shopPurchaseThisTurn = false;
   private eventSequence = 0;
   private readonly presentationEvents: PresentationEvent[] = [];
@@ -162,6 +171,7 @@ export class SessionEngine {
       floor: null,
       combat: { p1: null, p2: null },
       sharedShop: { floor: null, offers: [], restockAfterTurns: null },
+      shop: null,
       winner: null
     };
     if (options.mode === 'cpu') this.ready.add('p2');
@@ -207,22 +217,37 @@ export class SessionEngine {
   }
 
   tick(deltaMs: number): void {
+    if (this.state.phase === 'shop' && this.shopRuntime && this.state.floor) {
+      const command=this.commands[this.state.activePlayer];
+      if(command) {
+        const direction=normalize(command.moveX,command.moveY);const pos=this.shopRuntime.playerPosition;
+        this.shopRuntime.playerPosition=clampPosition({x:pos.x+direction.x*PLAYER_SPEED*deltaMs/1000,y:pos.y+direction.y*PLAYER_SPEED*deltaMs/1000},this.state.floor);
+      }
+      this.touch();return;
+    }
     if (this.state.phase !== 'combat' || !this.activeRuntime) return;
     this.tickHits.clear();
     const playerId = this.state.activePlayer;
     const player = this.state.players[playerId];
     const runtime = this.activeRuntime;
+    runtime.elapsedMs += deltaMs;
+    runtime.protectionMs = Math.max(0,runtime.protectionMs-deltaMs);
     const command = this.commands[playerId] ?? { moveX: 0, moveY: 0, aim: { x: 1, y: 0 } };
     runtime.timeRemainingMs = Math.max(0, runtime.timeRemainingMs - deltaMs);
     runtime.attackCooldownMs = Math.max(0, runtime.attackCooldownMs - deltaMs);
     runtime.dashCooldownMs = Math.max(0, runtime.dashCooldownMs - deltaMs);
     this.applyMovement(runtime, command, deltaMs, playerId);
+    if(!this.inCombat(runtime,playerId))return;
     this.applyAttack(runtime, command, player, playerId);
     this.applyMonsterMovement(runtime, player, playerId, deltaMs);
+    if(!this.inCombat(runtime,playerId))return;
     this.applyProjectiles(runtime, player, playerId, deltaMs);
+    if(!this.inCombat(runtime,playerId))return;
     this.applyHazards(runtime, player, playerId, deltaMs);
+    if(!this.inCombat(runtime,playerId))return;
     this.applyChestInteraction(runtime, command, player);
     this.applyGhost(runtime, playerId, deltaMs);
+    if(!this.inCombat(runtime,playerId))return;
     if (runtime.timeRemainingMs === 0 && !runtime.ghost?.active) {
       runtime.ghost = { position: { x: runtime.blueprint.width / 2, y: 40 }, active: true };
       this.emit(playerId, { kind: 'ghost', position: runtime.ghost.position });
@@ -241,6 +266,7 @@ export class SessionEngine {
       p2: this.runtimes.p2 ? this.toSnapshot(this.runtimes.p2) : null
     };
     snapshot.sharedShop = this.currentShopState();
+    snapshot.shop = this.shopRuntime ? clone(this.shopRuntime) : null;
     snapshot.presentationEvents = clone(this.presentationEvents);
     return snapshot;
   }
@@ -259,12 +285,17 @@ export class SessionEngine {
     return this.state.activePlayer === playerId && this.state.phase !== 'victory';
   }
 
+  private inCombat(runtime: CombatRuntime, playerId: PlayerId): boolean {
+    return this.state.phase==='combat' && this.state.activePlayer===playerId && this.activeRuntime===runtime;
+  }
+
   private enterFloor(playerId: PlayerId, floor: number): void {
     const blueprint = generateFloorBlueprint(this.state.seed, floor);
     this.state.floor = blueprint;
     this.commands[playerId] = null;
     this.runtimes[playerId] = null;
     this.activeRuntime = null;
+    this.shopRuntime = null; this.shopInteractionHeld = false;
     this.state.players[playerId].hearts = MAX_HEARTS;
     this.shopPurchaseThisTurn = false;
     if (blueprint.type === 'shop') {
@@ -276,6 +307,7 @@ export class SessionEngine {
       this.shopStates.set(floor, existing);
       this.state.sharedShop = clone(existing);
       this.state.phase = 'shop';
+      this.shopRuntime = createWorldShop(floor);
       return;
     }
     const runtime: CombatRuntime = {
@@ -290,7 +322,8 @@ export class SessionEngine {
       complete: false,
       attackCooldownMs: 0,
       dashCooldownMs: 0,
-      lastDamageAt: new Map()
+      lastDamageAt: new Map(),
+      elapsedMs: 0, protectionMs: 0, lastThornPosition: null
     };
     this.runtimes[playerId] = runtime;
     this.activeRuntime = runtime;
@@ -299,9 +332,18 @@ export class SessionEngine {
   }
 
   private setCombatCommand(playerId: PlayerId, command: CombatCommand): CommandResult {
-    if (!this.isActive(playerId) || this.state.phase !== 'combat') return { ok: false, error: 'Combat is not active.' };
+    if (!this.isActive(playerId) || !['combat','shop'].includes(this.state.phase)) return { ok: false, error: 'Combat is not active.' };
     this.commands[playerId] = command;
     this.touch();
+    if(this.state.phase==='shop' && this.shopRuntime) {
+      const pressed=Boolean(command.interact && !this.shopInteractionHeld);this.shopInteractionHeld=Boolean(command.interact);
+      if(pressed) {
+        const pedestal=nearestShopPedestal(this.shopRuntime);
+        if(pedestal)return this.buy(playerId,pedestal.slotId);
+        if(distance(this.shopRuntime.playerPosition,this.shopRuntime.exitPosition)<=SHOP_INTERACT_RADIUS)return this.finishShop(playerId);
+        return {ok:false,error:'Move closer to a shop display.'};
+      }
+    }
     return { ok: true };
   }
 
@@ -316,25 +358,25 @@ export class SessionEngine {
       next = clampPosition({ x: next.x + aim.x * DASH_DISTANCE, y: next.y + aim.y * DASH_DISTANCE }, runtime.blueprint);
       runtime.dashCooldownMs = 900;
       if (this.hasBuff(this.state.players[playerId], 'flame-dash')) {
-        runtime.hazards.push({ id: `fire-${Date.now()}`, position: previous, radius: 34, damage: 25, owner: playerId, ttlMs: 2400 });
+        runtime.hazards.push({ id: `fire-${++this.hazardSequence}`, position: previous, radius: 34, damage: 25, owner: playerId, ttlMs: 2400, ageMs: 0 });
       }
     }
     const obstacle = runtime.blueprint.obstacles.find((candidate) => insideRect(next, candidate));
     if (obstacle) {
       if (dashed) this.emit(playerId, { kind: 'dash', from: previous, position: previous, direction: command.aim });
       const key = `obstacle:${obstacle.x}:${obstacle.y}`;
-      const now = Date.now();
-      const lastHit = runtime.lastDamageAt.get(key) ?? 0;
+      const now = runtime.elapsedMs;
+      const lastHit = runtime.lastDamageAt.get(key) ?? -Infinity;
       if (now - lastHit > 1000) {
-        runtime.lastDamageAt.set(key, now);
-        this.damagePlayer(playerId, 1, 'obstacle');
+        if(this.damagePlayer(playerId, 1, 'obstacle'))runtime.lastDamageAt.set(key, now);
       }
       return;
     }
     runtime.playerPosition = next;
     if (dashed) this.emit(playerId, { kind: 'dash', from: previous, position: next, direction: command.aim });
-    if (distance(previous, next) > 0 && this.hasBuff(this.state.players[playerId], 'thorn-trail')) {
-      runtime.hazards.push({ id: `thorn-${Date.now()}`, position: previous, radius: 20, damage: 12, owner: playerId, ttlMs: 3500 });
+    if (distance(previous, next) > 0 && this.hasBuff(this.state.players[playerId], 'thorn-trail') && (!runtime.lastThornPosition || distance(runtime.lastThornPosition,previous)>=18)) {
+      runtime.lastThornPosition={...previous};
+      runtime.hazards.push({ id: `thorn-${++this.hazardSequence}`, position: previous, radius: 20, damage: 12, owner: playerId, ttlMs: 3500, ageMs: 0 });
     }
   }
 
@@ -366,7 +408,7 @@ export class SessionEngine {
   }
 
   private applyMonsterMovement(runtime: CombatRuntime, player: PlayerState, playerId: PlayerId, deltaMs: number): void {
-    const now = Date.now();
+    const now = runtime.elapsedMs;
     for (const monster of runtime.monsters) {
       if (!monster.alive) continue;
       const direction = normalize(runtime.playerPosition.x - monster.position.x, runtime.playerPosition.y - monster.position.y);
@@ -375,20 +417,19 @@ export class SessionEngine {
         y: monster.position.y + direction.y * 34 * deltaMs / 1000
       }, runtime.blueprint);
       if (distance(monster.position, runtime.playerPosition) < 28) {
-        const lastHit = runtime.lastDamageAt.get(monster.id) ?? 0;
+        const lastHit = runtime.lastDamageAt.get(monster.id) ?? -Infinity;
         if (now - lastHit > 850) {
-          runtime.lastDamageAt.set(monster.id, now);
-          this.damagePlayer(playerId, 1, 'monster');
-          if (player.hearts <= 0) return;
+          if(this.damagePlayer(playerId, 1, 'monster'))runtime.lastDamageAt.set(monster.id, now);
+          if (!this.inCombat(runtime,playerId)) return;
         }
       }
     }
     for (const obstacle of runtime.blueprint.obstacles) {
       if (insideRect(runtime.playerPosition, obstacle)) {
-        const lastHit = runtime.lastDamageAt.get(`obstacle:${obstacle.x}:${obstacle.y}`) ?? 0;
+        const lastHit = runtime.lastDamageAt.get(`obstacle:${obstacle.x}:${obstacle.y}`) ?? -Infinity;
         if (now - lastHit > 1000) {
-          runtime.lastDamageAt.set(`obstacle:${obstacle.x}:${obstacle.y}`, now);
-          this.damagePlayer(playerId, 1, 'obstacle');
+          if(this.damagePlayer(playerId, 1, 'obstacle'))runtime.lastDamageAt.set(`obstacle:${obstacle.x}:${obstacle.y}`, now);
+          if(!this.inCombat(runtime,playerId))return;
         }
       }
     }
@@ -426,12 +467,15 @@ export class SessionEngine {
   }
 
   private applyHazards(runtime: CombatRuntime, player: PlayerState, playerId: PlayerId, deltaMs: number): void {
-    const now = Date.now();
-    runtime.hazards = runtime.hazards.filter((hazard) => {
+    const now = runtime.elapsedMs;
+    const survivors: RuntimeHazard[]=[];
+    for(const hazard of runtime.hazards) {
       hazard.ttlMs -= deltaMs;
-      if (distance(hazard.position, runtime.playerPosition) < hazard.radius && now - (runtime.lastDamageAt.get(hazard.id) ?? 0) > 900) {
-        runtime.lastDamageAt.set(hazard.id, now);
-        this.damagePlayer(playerId, 1, 'trail');
+      hazard.ageMs += deltaMs;
+      if(hazard.ttlMs<=0)continue;
+      if (hazard.ageMs>=OWNER_TRAIL_ARM_MS && distance(hazard.position, runtime.playerPosition) < hazard.radius && now - (runtime.lastDamageAt.get(hazard.id) ?? -Infinity) >= 900) {
+        if(this.damagePlayer(playerId, 1, 'trail'))runtime.lastDamageAt.set(hazard.id, now);
+        if(!this.inCombat(runtime,playerId))return;
       }
       for (const monster of runtime.monsters) {
         if (monster.alive && distance(hazard.position, monster.position) < hazard.radius) {
@@ -444,8 +488,9 @@ export class SessionEngine {
           }
         }
       }
-      return hazard.ttlMs > 0;
-    });
+      survivors.push(hazard);
+    }
+    runtime.hazards=survivors;
   }
 
   private applyChestInteraction(runtime: CombatRuntime, command: CombatCommand, player: PlayerState): void {
@@ -468,12 +513,15 @@ export class SessionEngine {
     if (distance(runtime.ghost.position, runtime.playerPosition) < 24) this.die(playerId, 'ghost');
   }
 
-  private damagePlayer(playerId: PlayerId, amount: number, cause = 'monster'): void {
-    if (this.state.phase !== 'combat') return;
+  private damagePlayer(playerId: PlayerId, amount: number, cause = 'monster'): boolean {
+    const runtime=this.runtimes[playerId];
+    if (!runtime || !this.inCombat(runtime,playerId) || runtime.protectionMs>0) return false;
+    runtime.protectionMs=PLAYER_PROTECTION_MS;
     const player = this.state.players[playerId];
     player.hearts = Math.max(0, player.hearts - amount);
     this.emit(playerId, { kind: 'player-hit', amount, cause, position: this.runtimes[playerId]?.playerPosition });
     if (player.hearts === 0) this.die(playerId, cause);
+    return true;
   }
 
   private die(playerId: PlayerId, cause = 'damage'): void {
@@ -484,6 +532,7 @@ export class SessionEngine {
     player.hearts = MAX_HEARTS;
     this.runtimes[playerId] = null;
     this.activeRuntime = null;
+    this.shopRuntime = null; this.shopInteractionHeld = false;this.commands.p1=null;this.commands.p2=null;
     this.finishTurn();
   }
 
@@ -509,6 +558,7 @@ export class SessionEngine {
     if (this.state.phase === 'victory') return;
     if (countCurrentTurn) this.decrementShopTimers();
     this.activeRuntime = null;
+    this.shopRuntime = null; this.shopInteractionHeld = false; this.commands.p1=null; this.commands.p2=null;
     this.state.floor = null;
     this.state.combat = { p1: null, p2: null };
     this.state.phase = 'roll';
@@ -540,6 +590,8 @@ export class SessionEngine {
     const offerIndex = shop.offers.findIndex((offer) => offer.slotId === slotId);
     if (offerIndex < 0) return { ok: false, error: 'Item is out of stock.' };
     const offer = shop.offers[offerIndex];
+    const pedestal=this.shopRuntime?.pedestals.find(p=>p.slotId===slotId);
+    if(!pedestal || !this.shopRuntime || distance(this.shopRuntime.playerPosition,pedestal.position)>SHOP_INTERACT_RADIUS)return {ok:false,error:'Move closer to this item.'};
     const player = this.state.players[playerId];
     if (player.coins < offer.price) return { ok: false, error: 'Not enough coins.' };
     player.coins -= offer.price;
@@ -547,7 +599,7 @@ export class SessionEngine {
     if (shop.restockAfterTurns === null) shop.restockAfterTurns = 3;
     this.shopPurchaseThisTurn = true;
     this.grantItem(player, offer.itemId);
-    this.emit(playerId, { kind: 'purchase', itemId: offer.itemId, coins: -offer.price, targetId: offer.slotId });
+    this.emit(playerId, { kind: 'purchase', itemId: offer.itemId, coins: -offer.price, targetId: offer.slotId, position: this.shopRuntime.playerPosition });
     this.state.sharedShop = clone(shop);
     this.touch();
     return { ok: true };
@@ -567,14 +619,14 @@ export class SessionEngine {
     if (player.potions <= 0 || player.hearts >= MAX_HEARTS) return { ok: false, error: 'Potion cannot be used.' };
     player.potions -= 1;
     player.hearts = Math.min(MAX_HEARTS, player.hearts + 1);
-    this.emit(playerId, { kind: 'heal', amount: 1, position: this.runtimes[playerId]?.playerPosition });
+    this.emit(playerId, { kind: 'heal', amount: 1, position: this.runtimes[playerId]?.playerPosition ?? this.shopRuntime?.playerPosition });
     this.touch();
     return { ok: true };
   }
 
   private grantItem(player: PlayerState, itemId: string): void {
     const definition = item(itemId);
-    this.emit(player.id, { kind: 'item', itemId, position: this.runtimes[player.id]?.playerPosition });
+    this.emit(player.id, { kind: 'item', itemId, position: this.runtimes[player.id]?.playerPosition ?? this.shopRuntime?.playerPosition });
     if (definition.kind === 'consumable') {
       player.potions += 1;
     } else if (definition.kind === 'weapon') {
@@ -620,6 +672,7 @@ export class SessionEngine {
     this.emit(playerId, { kind: 'victory', position: this.runtimes[playerId]?.playerPosition });
     this.state.winner = playerId;
     this.state.phase = 'victory';
+    this.touch();
   }
 
   private toSnapshot(runtime: CombatRuntime): CombatSnapshot {
@@ -631,7 +684,8 @@ export class SessionEngine {
       monsters: runtime.monsters.map((monster) => ({ ...monster, position: { ...monster.position } })),
       chests: runtime.chests.map((chest) => ({ ...chest, position: { ...chest.position } })),
       projectiles: runtime.projectiles.map(({ id, position, velocity, owner }) => ({ id, position: { ...position }, velocity: { ...velocity }, owner })),
-      hazards: runtime.hazards.map(({ id, position, radius, damage, owner }) => ({ id, position: { ...position }, radius, damage, owner })),
+      hazards: runtime.hazards.map(({ id, position, radius, damage, owner, ageMs }) => ({ id, position: { ...position }, radius, damage, owner, armingMs: Math.max(0,OWNER_TRAIL_ARM_MS-ageMs) })),
+      protectionMs: runtime.protectionMs,
       ghost: runtime.ghost ? { position: { ...runtime.ghost.position }, active: runtime.ghost.active } : null,
       timeRemainingMs: runtime.timeRemainingMs,
       complete: runtime.complete
