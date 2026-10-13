@@ -89,4 +89,16 @@ Screenshots: [normal dungeon](playtest/normal-dungeon.jpg), [CPU spectating](pla
 
 ### Public rollout
 
-Deployment verification is recorded here after the GitHub Pages workflow and Render version check.
+The game/runtime feature commit is **`f4b37d632617921e525e505f5aff1dff68ce5c99`**. [GitHub Pages run 38332543540](https://github.com/yusun1115/DiceTower-RollTo100/actions/runs/38332543540) completed successfully. The live page loaded the new theme and runtime images without console errors. Fresh public CPU rooms `XXNF6` (before server rollout) and `ZWH72` (after rollout) passed create→ready→confirmed roll→dungeon entry; no existing player's room was joined. [Public screenshot](playtest/public-dungeon.jpg).
+
+Render had still been serving `b48bc6c`. Using the existing service, repository and `main` branch, **Deploy latest commit** successfully deployed `f4b37d6` (`dep-db6olqd9fdbs73dntq9g`, Live). No hosting plan, credentials, permissions or auto-deploy settings were changed. `/health` returned `presentationVersion: 1` and the exact feature commit above.
+
+The public protocol smoke check created its own CPU room `GRVHS`: confirmed die 1, destination 1, phase combat, and ordered server facts `turn`, `roll`, `attack`. The legacy path was exercised before server rollout; final-hit coordinates, precise death causes, accepted dash/attack facts and explicit reward events are available after rollout. Public normal play is now using the event-aware server, not only legacy fallbacks.
+
+Reproduce the non-invasive smoke check after deployment (it creates, tests, and closes a new CPU room):
+
+```powershell
+node scripts/verify-public-session.mjs https://dicetower-rollto100-server.onrender.com <expected-feature-commit>
+```
+
+The follow-up verification/checklist commit changes documentation, a diagnostic script and a screenshot only; runtime code remains the feature version above. Deployment restarts disconnect in-memory sessions, so start a new match after refreshing the page. The free Render instance may take time to wake after inactivity; the UI keeps the start request pending until the connection opens.
